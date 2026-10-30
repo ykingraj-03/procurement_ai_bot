@@ -20,7 +20,7 @@ except ImportError:
 
 # ----------------- PAGE CONFIG -----------------
 st.set_page_config(
-    page_title="DroneProcurement — AI-Assisted Sourcing & BOQ Builder",
+    page_title="The Drone Builder",
     page_icon="📋",
     layout="wide",
     initial_sidebar_state="collapsed"
