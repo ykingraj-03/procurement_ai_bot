@@ -59,10 +59,11 @@ CUSTOM_VENDORS = {
 
 DANNY_NOTION_URL = "https://danny8.notion.site/Danny-s-Inventory-List-214fd82319444160b57ffdf5ebb118bd"
 
-HEADERS = {
+BROWSER_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/json,*/*;q=0.8",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
+    "Cache-Control": "no-cache",
 }
 
 # ----------------- ROBUST GEMINI CALL WITH BACKOFF RETRY -----------------
@@ -92,7 +93,7 @@ def call_gemini_with_retry(client: genai.Client, model_name: str, contents: str,
                     raise e
     raise Exception("Rate limit reached.")
 
-# ----------------- THOROUGH LOCAL REGEX PARSER (ALL VENDORS) -----------------
+# ----------------- THOROUGH LOCAL REGEX PARSER -----------------
 def fallback_regex_parser(raw_candidates: list[dict], item_query: str) -> list[dict]:
     extracted = []
     query_terms = [t.lower() for t in item_query.split() if len(t) > 2]
@@ -101,7 +102,7 @@ def fallback_regex_parser(raw_candidates: list[dict], item_query: str) -> list[d
         vendor = cand.get("vendor", "Unknown Vendor")
         link = cand.get("link", "")
         
-        # WooCommerce direct JSON items
+        # WooCommerce direct JSON items or Robu API items
         if "title" in cand:
             title = cand["title"]
             if not query_terms or any(term in title.lower() for term in query_terms):
@@ -117,22 +118,18 @@ def fallback_regex_parser(raw_candidates: list[dict], item_query: str) -> list[d
                 })
             continue
 
-        # Jina markdown payload parsing for all lines
+        # Jina markdown payload parsing
         md_text = cand.get("raw_markdown", "")
         lines = md_text.splitlines()
         
         for i, line in enumerate(lines):
-            # Look for markdown links [Title](URL)
             link_match = re.search(r"\[([^\]]+)\]\((https?://[^\)]+)\)", line)
             if link_match:
                 t_text = link_match.group(1).strip()
                 l_url = link_match.group(2).strip()
                 
-                # Filter out navigation clutter
                 if len(t_text) > 8 and not any(w in t_text.lower() for w in ["home", "cart", "account", "login", "search", "wishlist", "compare", "blog", "track"]):
-                    # Check if query matches title
                     if not query_terms or any(term in t_text.lower() for term in query_terms):
-                        # Scan nearby lines (current and next 3 lines) for a price tag
                         item_price = 0.0
                         for offset in range(4):
                             if i + offset < len(lines):
@@ -156,7 +153,6 @@ def fallback_regex_parser(raw_candidates: list[dict], item_query: str) -> list[d
                             "link": l_url if "http" in l_url else link
                         })
 
-    # Deduplicate by link
     seen_links = set()
     unique_items = []
     for item in extracted:
@@ -196,12 +192,61 @@ def expand_search_queries(client: genai.Client, model_name: str, item_name: str)
     except Exception:
         return [item_name]
 
-# ----------------- STEP 2: ASYNC VENDOR SCRAPERS (EXPANDED LIMITS) -----------------
+# ----------------- STEP 2: SPECIALIZED VENDOR SCRAPERS -----------------
+async def fetch_robu_and_zbotic(session: httpx.AsyncClient, vendor: str, base_url: str, query: str) -> list[dict]:
+    """Specialized handler for Robu and Zbotic using WooCommerce Store API + Jina Bypass."""
+    results = []
+    # 1. Try WooCommerce Store API with custom browser headers
+    api_url = f"{base_url}/wp-json/wc/store/v1/products?search={quote_plus(query)}&per_page=20"
+    try:
+        resp = await session.get(api_url, headers=BROWSER_HEADERS, timeout=8.0)
+        if resp.status_code == 200 and "application/json" in resp.headers.get("content-type", ""):
+            items = resp.json()
+            if isinstance(items, list):
+                for item in items:
+                    if not item.get("is_in_stock", True):
+                        continue
+                    prices = item.get("prices", {})
+                    raw_price = prices.get("price", "0")
+                    minor_unit = prices.get("currency_minor_unit", 2)
+                    price_val = float(raw_price) / (10 ** minor_unit) if raw_price else 0
+                    results.append({
+                        "vendor": vendor,
+                        "title": item.get("name", ""),
+                        "sku": item.get("sku", "N/A"),
+                        "price": price_val,
+                        "in_stock": item.get("is_in_stock", True),
+                        "link": item.get("permalink", ""),
+                        "raw_desc": BeautifulSoup(item.get("short_description", ""), "html.parser").get_text(" ", strip=True)[:150]
+                    })
+                if results:
+                    return results
+    except Exception:
+        pass
+
+    # 2. Fallback to Jina Reader Proxy for Robu/Zbotic HTML search
+    search_url = f"{base_url}/?s={quote_plus(query)}&post_type=product"
+    try:
+        jina_url = f"https://r.jina.ai/{search_url}"
+        resp = await session.get(jina_url, headers=BROWSER_HEADERS, timeout=12.0)
+        if resp.status_code == 200 and len(resp.text) > 100:
+            results.append({
+                "vendor": vendor,
+                "raw_markdown": clean_markdown_noise(resp.text),
+                "link": search_url
+            })
+    except Exception:
+        pass
+    return results
+
 async def fetch_woocommerce(session: httpx.AsyncClient, vendor: str, base_url: str, query: str) -> list[dict]:
+    if vendor in ["Robu", "Zbotic"]:
+        return await fetch_robu_and_zbotic(session, vendor, base_url, query)
+
     results = []
     api_url = f"{base_url}/wp-json/wc/store/v1/products?search={quote_plus(query)}&per_page=20"
     try:
-        resp = await session.get(api_url, timeout=8.0)
+        resp = await session.get(api_url, headers=BROWSER_HEADERS, timeout=8.0)
         if resp.status_code == 200 and "application/json" in resp.headers.get("content-type", ""):
             items = resp.json()
             if isinstance(items, list):
@@ -227,7 +272,7 @@ async def fetch_woocommerce(session: httpx.AsyncClient, vendor: str, base_url: s
     search_url = f"{base_url}/?s={quote_plus(query)}&post_type=product"
     try:
         jina_url = f"https://r.jina.ai/{search_url}"
-        resp = await session.get(jina_url, timeout=12.0)
+        resp = await session.get(jina_url, headers=BROWSER_HEADERS, timeout=12.0)
         if resp.status_code == 200 and len(resp.text) > 100:
             results.append({
                 "vendor": vendor,
@@ -242,7 +287,7 @@ async def fetch_shopify(session: httpx.AsyncClient, vendor: str, base_url: str, 
     results = []
     api_url = f"{base_url}/search/suggest.json?q={quote_plus(query)}&resources[type]=product&resources[limit]=20"
     try:
-        resp = await session.get(api_url, timeout=8.0)
+        resp = await session.get(api_url, headers=BROWSER_HEADERS, timeout=8.0)
         if resp.status_code == 200:
             data = resp.json()
             products = data.get("resources", {}).get("results", {}).get("products", [])
@@ -264,7 +309,7 @@ async def fetch_shopify(session: httpx.AsyncClient, vendor: str, base_url: str, 
 
     search_url = f"{base_url}/search?q={quote_plus(query)}"
     try:
-        resp = await session.get(f"https://r.jina.ai/{search_url}", timeout=10.0)
+        resp = await session.get(f"https://r.jina.ai/{search_url}", headers=BROWSER_HEADERS, timeout=10.0)
         if resp.status_code == 200 and len(resp.text) > 100:
             results.append({
                 "vendor": vendor,
@@ -278,7 +323,7 @@ async def fetch_shopify(session: httpx.AsyncClient, vendor: str, base_url: str, 
 async def fetch_custom_and_notion(session: httpx.AsyncClient, vendor: str, target_url: str) -> list[dict]:
     results = []
     try:
-        resp = await session.get(f"https://r.jina.ai/{target_url}", timeout=12.0)
+        resp = await session.get(f"https://r.jina.ai/{target_url}", headers=BROWSER_HEADERS, timeout=12.0)
         if resp.status_code == 200 and len(resp.text) > 100:
             results.append({
                 "vendor": vendor,
@@ -292,7 +337,7 @@ async def fetch_custom_and_notion(session: httpx.AsyncClient, vendor: str, targe
 async def gather_all_vendors(queries: list[str], selected_vendors: list[str]) -> list[dict]:
     all_raw = []
     primary_query = queries[0]
-    async with httpx.AsyncClient(headers=HEADERS, follow_redirects=True) as session:
+    async with httpx.AsyncClient(headers=BROWSER_HEADERS, follow_redirects=True) as session:
         tasks = []
         for vendor, url in WOOCOMMERCE_VENDORS.items():
             if vendor in selected_vendors:
@@ -315,7 +360,6 @@ async def gather_all_vendors(queries: list[str], selected_vendors: list[str]) ->
                 all_raw.extend(r)
     return all_raw
 
-# ----------------- STEP 3: EXTRACTION (GEMINI + FULL REGEX PARSER) -----------------
 def filter_and_structure_results(
     client: genai.Client,
     model_name: str,
@@ -325,13 +369,11 @@ def filter_and_structure_results(
 ) -> list[dict]:
     if not raw_candidates:
         return []
-
-    # Always use the comprehensive local regex parser to ensure ALL vendors and rows are captured without missing any
     return fallback_regex_parser(raw_candidates, item_name)
 
 # ----------------- STREAMLIT UI LAYOUT -----------------
 st.title("🛸 Indian Drone Vendor Part Finder Agent")
-st.caption("Live parallel search across 13 Indian FPV & UAV vendors — Comprehensive Multi-Vendor Scraper")
+st.caption("Live parallel search across 13 Indian FPV & UAV vendors — Enhanced Robu & Zbotic Bypass")
 
 with st.sidebar:
     st.header("⚙️ Agent Configuration")
@@ -372,14 +414,14 @@ if st.button("🔍 Search Across All Vendors", type="primary", use_container_wid
     else:
         client = genai.Client(api_key=api_key)
 
-        with st.status("Running comprehensive multi-vendor search...", expanded=True) as status:
+        with st.status("Running enhanced multi-vendor search...", expanded=True) as status:
             st.write("🧠 Expanding search terms...")
             search_queries = expand_search_queries(client, selected_model, item_input)
             st.write(f"**Search Variations:** `{', '.join(search_queries)}`")
 
-            st.write(f"🌐 Scraping all {len(selected_vendors)} vendor stores (up to 20 products per store)...")
+            st.write(f"🌐 Scraping all {len(selected_vendors)} vendor stores with firewall bypass...")
             raw_data = asyncio.run(gather_all_vendors(search_queries, selected_vendors))
-            st.write(f"📥 Collected responses from active stores. Parsing full comparison table...")
+            st.write(f"📥 Collected responses. Parsing full comparison table...")
 
             matched_items = filter_and_structure_results(client, selected_model, item_input, spec_input, raw_data)
             status.update(label=f"Search complete! Found {len(matched_items)} matching items across vendors.", state="complete")
