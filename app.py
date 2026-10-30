@@ -1505,8 +1505,8 @@ with st.sidebar:
 # ----------------- MINIMALIST HEADER -----------------
 st.markdown("""
 <div class="app-header">
-    <div class="app-title">DroneProcurement — AI-Assisted Vendor Search & BOQ Builder</div>
-    <p class="app-subtitle">Search by exact model or general build need (e.g., "5 inch FPV motors", "2.5 inch frame", "Radiomaster Pocket") across 13 Indian drone vendors</p>
+    <div class="app-title">The Drone Builder — AI-Assisted Vendor Search & BOQ Builder</div>
+    <p class="app-subtitle">Innovating the part selection process</p>
 </div>
 """, unsafe_allow_html=True)
 
