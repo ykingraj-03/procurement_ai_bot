@@ -92,70 +92,69 @@ def call_gemini_with_retry(client: genai.Client, model_name: str, contents: str,
                     raise e
     raise Exception("Rate limit reached.")
 
-# ----------------- LOCAL FALLBACK PARSER (ZERO TOKENS) -----------------
+# ----------------- THOROUGH LOCAL REGEX PARSER (ALL VENDORS) -----------------
 def fallback_regex_parser(raw_candidates: list[dict], item_query: str) -> list[dict]:
-    """Extracts products locally using regex when Gemini rate limit is hit."""
     extracted = []
+    query_terms = [t.lower() for t in item_query.split() if len(t) > 2]
+
     for cand in raw_candidates:
         vendor = cand.get("vendor", "Unknown Vendor")
         link = cand.get("link", "")
         
-        # If it's a WooCommerce direct JSON item
+        # WooCommerce direct JSON items
         if "title" in cand:
-            extracted.append({
-                "product_name": cand["title"],
-                "specification": cand.get("raw_desc", item_query),
-                "brand_name": "Generic / Brand",
-                "vendor_name": vendor,
-                "sku_name": cand.get("sku", "N/A"),
-                "rate": float(cand.get("price", 0)),
-                "in_stock": True,
-                "link": link
-            })
+            title = cand["title"]
+            if not query_terms or any(term in title.lower() for term in query_terms):
+                extracted.append({
+                    "product_name": title,
+                    "specification": cand.get("raw_desc", item_query),
+                    "brand_name": "Generic",
+                    "vendor_name": vendor,
+                    "sku_name": cand.get("sku", "N/A"),
+                    "rate": float(cand.get("price", 0)),
+                    "in_stock": True,
+                    "link": link
+                })
             continue
 
-        # If it's Jina markdown payload, parse lines for prices (₹ or Rs) and titles
+        # Jina markdown payload parsing for all lines
         md_text = cand.get("raw_markdown", "")
         lines = md_text.splitlines()
         
-        current_title = ""
-        current_price = 0.0
-        current_link = link
-        
-        for line in lines:
-            # Look for price patterns like ₹1,899 or Rs. 1899
-            price_match = re.search(r"(?:₹|Rs\.?)\s*([0-9,]+\.?[0-9]*)", line)
-            if price_match:
-                try:
-                    p_str = price_match.group(1).replace(",", "")
-                    current_price = float(p_str)
-                except ValueError:
-                    pass
-            
+        for i, line in enumerate(lines):
             # Look for markdown links [Title](URL)
             link_match = re.search(r"\[([^\]]+)\]\((https?://[^\)]+)\)", line)
             if link_match:
-                t_text = link_match.group(1)
-                l_url = link_match.group(2)
-                if len(t_text) > 10 and not any(w in t_text.lower() for w in ["home", "cart", "account", "login", "search", "wishlist"]):
-                    current_title = t_text
-                    if "http" in l_url:
-                        current_link = l_url
-
-            if current_title and current_price > 0:
-                if any(kw in current_title.lower() for kw in item_query.lower().split()[:2]):
-                    extracted.append({
-                        "product_name": current_title,
-                        "specification": item_query,
-                        "brand_name": "Generic",
-                        "vendor_name": vendor,
-                        "sku_name": "N/A",
-                        "rate": current_price,
-                        "in_stock": True,
-                        "link": current_link
-                    })
-                current_title = ""
-                current_price = 0.0
+                t_text = link_match.group(1).strip()
+                l_url = link_match.group(2).strip()
+                
+                # Filter out navigation clutter
+                if len(t_text) > 8 and not any(w in t_text.lower() for w in ["home", "cart", "account", "login", "search", "wishlist", "compare", "blog", "track"]):
+                    # Check if query matches title
+                    if not query_terms or any(term in t_text.lower() for term in query_terms):
+                        # Scan nearby lines (current and next 3 lines) for a price tag
+                        item_price = 0.0
+                        for offset in range(4):
+                            if i + offset < len(lines):
+                                price_match = re.search(r"(?:₹|Rs\.?)\s*([0-9,]+\.?[0-9]*)", lines[i + offset])
+                                if price_match:
+                                    try:
+                                        p_str = price_match.group(1).replace(",", "")
+                                        item_price = float(p_str)
+                                        break
+                                    except ValueError:
+                                        pass
+                        
+                        extracted.append({
+                            "product_name": t_text,
+                            "specification": item_query,
+                            "brand_name": "Generic",
+                            "vendor_name": vendor,
+                            "sku_name": "N/A",
+                            "rate": item_price,
+                            "in_stock": True,
+                            "link": l_url if "http" in l_url else link
+                        })
 
     # Deduplicate by link
     seen_links = set()
@@ -168,12 +167,12 @@ def fallback_regex_parser(raw_candidates: list[dict], item_query: str) -> list[d
 
 def clean_markdown_noise(md_text: str) -> str:
     cleaned = re.sub(r"!\[.*?\]\(.*?\)", "", md_text)
-    lines = [line.strip() for line in cleaned.splitlines() if len(line.strip()) > 3]
+    lines = [line.strip() for line in cleaned.splitlines() if len(line.strip()) > 2]
     filtered_lines = [
         l for l in lines
-        if not any(skip in l.lower() for skip in ["facebook.com", "instagram.com", "linkedin.com", "youtube.com", "twitter.com", "customer support"])
+        if not any(skip in l.lower() for skip in ["facebook.com", "instagram.com", "linkedin.com", "youtube.com", "twitter.com", "customer support", "privacy policy"])
     ]
-    return "\n".join(filtered_lines)[:2500]
+    return "\n".join(filtered_lines)[:6000]
 
 # ----------------- STEP 1: QUERY EXPANSION -----------------
 def expand_search_queries(client: genai.Client, model_name: str, item_name: str) -> list[str]:
@@ -197,12 +196,12 @@ def expand_search_queries(client: genai.Client, model_name: str, item_name: str)
     except Exception:
         return [item_name]
 
-# ----------------- STEP 2: ASYNC VENDOR SCRAPERS -----------------
+# ----------------- STEP 2: ASYNC VENDOR SCRAPERS (EXPANDED LIMITS) -----------------
 async def fetch_woocommerce(session: httpx.AsyncClient, vendor: str, base_url: str, query: str) -> list[dict]:
     results = []
-    api_url = f"{base_url}/wp-json/wc/store/v1/products?search={quote_plus(query)}&per_page=6"
+    api_url = f"{base_url}/wp-json/wc/store/v1/products?search={quote_plus(query)}&per_page=20"
     try:
-        resp = await session.get(api_url, timeout=6.0)
+        resp = await session.get(api_url, timeout=8.0)
         if resp.status_code == 200 and "application/json" in resp.headers.get("content-type", ""):
             items = resp.json()
             if isinstance(items, list):
@@ -220,17 +219,15 @@ async def fetch_woocommerce(session: httpx.AsyncClient, vendor: str, base_url: s
                         "price": price_val,
                         "in_stock": item.get("is_in_stock", True),
                         "link": item.get("permalink", ""),
-                        "raw_desc": BeautifulSoup(item.get("short_description", ""), "html.parser").get_text(" ", strip=True)[:100]
+                        "raw_desc": BeautifulSoup(item.get("short_description", ""), "html.parser").get_text(" ", strip=True)[:150]
                     })
-                if results:
-                    return results
     except Exception:
         pass
 
     search_url = f"{base_url}/?s={quote_plus(query)}&post_type=product"
     try:
         jina_url = f"https://r.jina.ai/{search_url}"
-        resp = await session.get(jina_url, timeout=10.0)
+        resp = await session.get(jina_url, timeout=12.0)
         if resp.status_code == 200 and len(resp.text) > 100:
             results.append({
                 "vendor": vendor,
@@ -243,9 +240,9 @@ async def fetch_woocommerce(session: httpx.AsyncClient, vendor: str, base_url: s
 
 async def fetch_shopify(session: httpx.AsyncClient, vendor: str, base_url: str, query: str) -> list[dict]:
     results = []
-    api_url = f"{base_url}/search/suggest.json?q={quote_plus(query)}&resources[type]=product&resources[limit]=6"
+    api_url = f"{base_url}/search/suggest.json?q={quote_plus(query)}&resources[type]=product&resources[limit]=20"
     try:
-        resp = await session.get(api_url, timeout=6.0)
+        resp = await session.get(api_url, timeout=8.0)
         if resp.status_code == 200:
             data = resp.json()
             products = data.get("resources", {}).get("results", {}).get("products", [])
@@ -260,16 +257,14 @@ async def fetch_shopify(session: httpx.AsyncClient, vendor: str, base_url: str, 
                     "price": float(p.get("price", 0)),
                     "in_stock": p.get("available", True),
                     "link": f"{base_url}{p.get('url', '')}",
-                    "raw_desc": BeautifulSoup(p.get("body", ""), "html.parser").get_text(" ", strip=True)[:100]
+                    "raw_desc": BeautifulSoup(p.get("body", ""), "html.parser").get_text(" ", strip=True)[:150]
                 })
-            if results:
-                return results
     except Exception:
         pass
 
     search_url = f"{base_url}/search?q={quote_plus(query)}"
     try:
-        resp = await session.get(f"https://r.jina.ai/{search_url}", timeout=8.0)
+        resp = await session.get(f"https://r.jina.ai/{search_url}", timeout=10.0)
         if resp.status_code == 200 and len(resp.text) > 100:
             results.append({
                 "vendor": vendor,
@@ -283,7 +278,7 @@ async def fetch_shopify(session: httpx.AsyncClient, vendor: str, base_url: str, 
 async def fetch_custom_and_notion(session: httpx.AsyncClient, vendor: str, target_url: str) -> list[dict]:
     results = []
     try:
-        resp = await session.get(f"https://r.jina.ai/{target_url}", timeout=10.0)
+        resp = await session.get(f"https://r.jina.ai/{target_url}", timeout=12.0)
         if resp.status_code == 200 and len(resp.text) > 100:
             results.append({
                 "vendor": vendor,
@@ -320,7 +315,7 @@ async def gather_all_vendors(queries: list[str], selected_vendors: list[str]) ->
                 all_raw.extend(r)
     return all_raw
 
-# ----------------- STEP 3: GEMINI FILTER WITH LOCAL FALLBACK -----------------
+# ----------------- STEP 3: EXTRACTION (GEMINI + FULL REGEX PARSER) -----------------
 def filter_and_structure_results(
     client: genai.Client,
     model_name: str,
@@ -331,41 +326,12 @@ def filter_and_structure_results(
     if not raw_candidates:
         return []
 
-    # Send a small trimmed slice of candidates to avoid token limits
-    trimmed_candidates = json.dumps(raw_candidates[:8])
-
-    prompt = f"""
-    Extract matching drone parts into valid JSON matching the schema.
-    Target Item: {item_name}
-    Specs: {specs if specs else 'Any'}
-    Exclude out of stock items.
-    Data:
-    {trimmed_candidates}
-    """
-    try:
-        res = call_gemini_with_retry(
-            client,
-            model_name,
-            prompt,
-            types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=SourcingResponse,
-                temperature=0.0,
-            ),
-        )
-        parsed = json.loads(res.text)
-        items = parsed.get("matched_parts", [])
-        if items:
-            return items
-    except Exception:
-        pass
-
-    # If Gemini hits rate limit, seamlessly fall back to local regex parser
+    # Always use the comprehensive local regex parser to ensure ALL vendors and rows are captured without missing any
     return fallback_regex_parser(raw_candidates, item_name)
 
 # ----------------- STREAMLIT UI LAYOUT -----------------
 st.title("🛸 Indian Drone Vendor Part Finder Agent")
-st.caption("Live parallel search across 13 Indian FPV & UAV vendors — Powered by Gemini + Local Zero-Token Fallback")
+st.caption("Live parallel search across 13 Indian FPV & UAV vendors — Comprehensive Multi-Vendor Scraper")
 
 with st.sidebar:
     st.header("⚙️ Agent Configuration")
@@ -406,17 +372,17 @@ if st.button("🔍 Search Across All Vendors", type="primary", use_container_wid
     else:
         client = genai.Client(api_key=api_key)
 
-        with st.status("Running multi-vendor procurement agent...", expanded=True) as status:
+        with st.status("Running comprehensive multi-vendor search...", expanded=True) as status:
             st.write("🧠 Expanding search terms...")
             search_queries = expand_search_queries(client, selected_model, item_input)
             st.write(f"**Search Variations:** `{', '.join(search_queries)}`")
 
-            st.write(f"🌐 Scraping {len(selected_vendors)} vendor stores...")
+            st.write(f"🌐 Scraping all {len(selected_vendors)} vendor stores (up to 20 products per store)...")
             raw_data = asyncio.run(gather_all_vendors(search_queries, selected_vendors))
-            st.write(f"📥 Collected `{len(raw_data)}` responses. Processing structured table...")
+            st.write(f"📥 Collected responses from active stores. Parsing full comparison table...")
 
             matched_items = filter_and_structure_results(client, selected_model, item_input, spec_input, raw_data)
-            status.update(label=f"Search complete! Found {len(matched_items)} matching items.", state="complete")
+            status.update(label=f"Search complete! Found {len(matched_items)} matching items across vendors.", state="complete")
 
         if matched_items:
             df = pd.DataFrame(matched_items)
@@ -437,7 +403,7 @@ if st.button("🔍 Search Across All Vendors", type="primary", use_container_wid
                 "link": "Product Link"
             })
 
-            st.subheader("📊 Available Products (Sorted: Low to High Cost)")
+            st.subheader(f"📊 Available Products ({len(df_display)} items found — Sorted: Low to High Cost)")
             st.dataframe(
                 df_display,
                 column_config={
@@ -456,4 +422,4 @@ if st.button("🔍 Search Across All Vendors", type="primary", use_container_wid
                 mime="text/csv"
             )
         else:
-            st.info("No matching products found. Try a different part name.")
+            st.info("No matching products found. Try a broader search term.")
