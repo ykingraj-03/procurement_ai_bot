@@ -57,21 +57,6 @@ CUSTOM_VENDORS = {
     "UAV Marketplace": "https://www.uavmarketplace.in/search?q=",
 }
 
-VENDOR_DOMAINS = {
-    "Robu": "robu.in",
-    "Zbotic": "zbotic.in",
-    "Tujo RC": "tujorc.com",
-    "Quadkart": "quadkart.in",
-    "Design Info": "designinfo.in",
-    "Anubis Tech": "anubisrc.com",
-    "FPV Guru": "fpvguru.in",
-    "Hi Tech XYZ": "hitechxyz.in",
-    "Xrobo": "xrobo.in",
-    "Robokits": "robokits.co.in",
-    "Indian Robo Store": "indianrobostore.com",
-    "UAV Marketplace": "uavmarketplace.in",
-}
-
 DANNY_NOTION_URL = "https://danny8.notion.site/Danny-s-Inventory-List-214fd82319444160b57ffdf5ebb118bd"
 
 HEADERS = {
@@ -81,18 +66,12 @@ HEADERS = {
 }
 
 # ----------------- ROBUST GEMINI CALL WITH BACKOFF RETRY -----------------
-def call_gemini_with_retry(client: genai.Client, model_name: str, contents: str, config: types.GenerateContentConfig, max_retries: int = 3):
-    """Automatically retries if rate limit (429) or temporary server error (503) occurs."""
-    models_to_try = [
-        model_name,
-        "gemini-2.0-flash",
-        "gemini-1.5-flash",
-    ]
-    # Deduplicate
+def call_gemini_with_retry(client: genai.Client, model_name: str, contents: str, config: types.GenerateContentConfig, max_retries: int = 2):
+    models_to_try = [model_name, "gemini-2.0-flash", "gemini-1.5-flash"]
     models_to_try = list(dict.fromkeys(models_to_try))
 
     for m in models_to_try:
-        delay = 2.0
+        delay = 3.0
         for attempt in range(max_retries):
             try:
                 return client.models.generate_content(
@@ -105,16 +84,88 @@ def call_gemini_with_retry(client: genai.Client, model_name: str, contents: str,
                 if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "503" in err_str or "UNAVAILABLE" in err_str:
                     if attempt < max_retries - 1:
                         time.sleep(delay)
-                        delay *= 2  # Exponential backoff
+                        delay *= 2
                         continue
-                # If it's a 404 or last attempt for this model, break to try next model
                 if "404" in err_str or "NOT_FOUND" in err_str:
                     break
                 if attempt == max_retries - 1 and m == models_to_try[-1]:
                     raise e
-    raise Exception("All Gemini model fallbacks and retry attempts exhausted due to rate limits.")
+    raise Exception("Rate limit reached.")
 
-# ----------------- CLEAN JINA MARKDOWN NOISE -----------------
+# ----------------- LOCAL FALLBACK PARSER (ZERO TOKENS) -----------------
+def fallback_regex_parser(raw_candidates: list[dict], item_query: str) -> list[dict]:
+    """Extracts products locally using regex when Gemini rate limit is hit."""
+    extracted = []
+    for cand in raw_candidates:
+        vendor = cand.get("vendor", "Unknown Vendor")
+        link = cand.get("link", "")
+        
+        # If it's a WooCommerce direct JSON item
+        if "title" in cand:
+            extracted.append({
+                "product_name": cand["title"],
+                "specification": cand.get("raw_desc", item_query),
+                "brand_name": "Generic / Brand",
+                "vendor_name": vendor,
+                "sku_name": cand.get("sku", "N/A"),
+                "rate": float(cand.get("price", 0)),
+                "in_stock": True,
+                "link": link
+            })
+            continue
+
+        # If it's Jina markdown payload, parse lines for prices (₹ or Rs) and titles
+        md_text = cand.get("raw_markdown", "")
+        lines = md_text.splitlines()
+        
+        current_title = ""
+        current_price = 0.0
+        current_link = link
+        
+        for line in lines:
+            # Look for price patterns like ₹1,899 or Rs. 1899
+            price_match = re.search(r"(?:₹|Rs\.?)\s*([0-9,]+\.?[0-9]*)", line)
+            if price_match:
+                try:
+                    p_str = price_match.group(1).replace(",", "")
+                    current_price = float(p_str)
+                except ValueError:
+                    pass
+            
+            # Look for markdown links [Title](URL)
+            link_match = re.search(r"\[([^\]]+)\]\((https?://[^\)]+)\)", line)
+            if link_match:
+                t_text = link_match.group(1)
+                l_url = link_match.group(2)
+                if len(t_text) > 10 and not any(w in t_text.lower() for w in ["home", "cart", "account", "login", "search", "wishlist"]):
+                    current_title = t_text
+                    if "http" in l_url:
+                        current_link = l_url
+
+            if current_title and current_price > 0:
+                if any(kw in current_title.lower() for kw in item_query.lower().split()[:2]):
+                    extracted.append({
+                        "product_name": current_title,
+                        "specification": item_query,
+                        "brand_name": "Generic",
+                        "vendor_name": vendor,
+                        "sku_name": "N/A",
+                        "rate": current_price,
+                        "in_stock": True,
+                        "link": current_link
+                    })
+                current_title = ""
+                current_price = 0.0
+
+    # Deduplicate by link
+    seen_links = set()
+    unique_items = []
+    for item in extracted:
+        if item["link"] not in seen_links:
+            seen_links.add(item["link"])
+            unique_items.append(item)
+    return unique_items
+
 def clean_markdown_noise(md_text: str) -> str:
     cleaned = re.sub(r"!\[.*?\]\(.*?\)", "", md_text)
     lines = [line.strip() for line in cleaned.splitlines() if len(line.strip()) > 3]
@@ -122,12 +173,12 @@ def clean_markdown_noise(md_text: str) -> str:
         l for l in lines
         if not any(skip in l.lower() for skip in ["facebook.com", "instagram.com", "linkedin.com", "youtube.com", "twitter.com", "customer support"])
     ]
-    return "\n".join(filtered_lines)[:3500]
+    return "\n".join(filtered_lines)[:2500]
 
 # ----------------- STEP 1: QUERY EXPANSION -----------------
-def expand_search_queries(client: genai.Client, model_name: str, item_name: str, specs: str) -> list[str]:
-    prompt = f"Generate 2 short search keyword variations (2-4 words max) for Indian drone e-commerce search bars searching for: {item_name} {specs}"
+def expand_search_queries(client: genai.Client, model_name: str, item_name: str) -> list[str]:
     try:
+        prompt = f"Generate 2 short search keyword variations (2-4 words max) for Indian drone stores searching for: {item_name}"
         res = call_gemini_with_retry(
             client,
             model_name,
@@ -146,45 +197,12 @@ def expand_search_queries(client: genai.Client, model_name: str, item_name: str,
     except Exception:
         return [item_name]
 
-# ----------------- STEP 2A: GOOGLE SEARCH GROUNDING -----------------
-def search_vendors_via_google_grounding(client: genai.Client, model_name: str, item_name: str, specs: str, selected_vendors: list[str]) -> str:
-    active_domains = [VENDOR_DOMAINS[v] for v in selected_vendors if v in VENDOR_DOMAINS]
-    if not active_domains:
-        return ""
-
-    site_filter = " OR ".join([f"site:{d}" for d in active_domains])
-    search_prompt = f"""
-    Search Indian drone vendors for: {item_name} {specs}
-    Specifically check results matching ({site_filter}).
-    List matching products found: Product Name, Vendor Name, Price in INR (₹), Stock Status, URL.
-    """
-    try:
-        res = call_gemini_with_retry(
-            client,
-            model_name,
-            search_prompt,
-            types.GenerateContentConfig(
-                tools=[types.Tool(google_search=types.GoogleSearch())],
-                temperature=0.0,
-            ),
-        )
-        grounding_links = []
-        if res.candidates and res.candidates[0].grounding_metadata:
-            chunks = res.candidates[0].grounding_metadata.grounding_chunks or []
-            for chunk in chunks:
-                if chunk.web and chunk.web.uri:
-                    grounding_links.append(f"{chunk.web.title}: {chunk.web.uri}")
-        return (res.text or "") + "\nGrounded URLs:\n" + "\n".join(grounding_links)
-    except Exception as e:
-        return f"Grounding skipped due to rate limit: {e}"
-
-# ----------------- STEP 2B: ASYNC DIRECT & JINA SCRAPERS -----------------
+# ----------------- STEP 2: ASYNC VENDOR SCRAPERS -----------------
 async def fetch_woocommerce(session: httpx.AsyncClient, vendor: str, base_url: str, query: str) -> list[dict]:
     results = []
-    # 1. WooCommerce JSON API
-    api_url = f"{base_url}/wp-json/wc/store/v1/products?search={quote_plus(query)}&per_page=8"
+    api_url = f"{base_url}/wp-json/wc/store/v1/products?search={quote_plus(query)}&per_page=6"
     try:
-        resp = await session.get(api_url, timeout=8.0)
+        resp = await session.get(api_url, timeout=6.0)
         if resp.status_code == 200 and "application/json" in resp.headers.get("content-type", ""):
             items = resp.json()
             if isinstance(items, list):
@@ -202,19 +220,18 @@ async def fetch_woocommerce(session: httpx.AsyncClient, vendor: str, base_url: s
                         "price": price_val,
                         "in_stock": item.get("is_in_stock", True),
                         "link": item.get("permalink", ""),
-                        "raw_desc": BeautifulSoup(item.get("short_description", ""), "html.parser").get_text(" ", strip=True)[:150]
+                        "raw_desc": BeautifulSoup(item.get("short_description", ""), "html.parser").get_text(" ", strip=True)[:100]
                     })
                 if results:
                     return results
     except Exception:
         pass
 
-    # 2. Jina Reader Headless Proxy
     search_url = f"{base_url}/?s={quote_plus(query)}&post_type=product"
     try:
         jina_url = f"https://r.jina.ai/{search_url}"
-        resp = await session.get(jina_url, timeout=12.0)
-        if resp.status_code == 200 and len(resp.text) > 150:
+        resp = await session.get(jina_url, timeout=10.0)
+        if resp.status_code == 200 and len(resp.text) > 100:
             results.append({
                 "vendor": vendor,
                 "raw_markdown": clean_markdown_noise(resp.text),
@@ -226,9 +243,9 @@ async def fetch_woocommerce(session: httpx.AsyncClient, vendor: str, base_url: s
 
 async def fetch_shopify(session: httpx.AsyncClient, vendor: str, base_url: str, query: str) -> list[dict]:
     results = []
-    api_url = f"{base_url}/search/suggest.json?q={quote_plus(query)}&resources[type]=product&resources[limit]=8"
+    api_url = f"{base_url}/search/suggest.json?q={quote_plus(query)}&resources[type]=product&resources[limit]=6"
     try:
-        resp = await session.get(api_url, timeout=8.0)
+        resp = await session.get(api_url, timeout=6.0)
         if resp.status_code == 200:
             data = resp.json()
             products = data.get("resources", {}).get("results", {}).get("products", [])
@@ -243,7 +260,7 @@ async def fetch_shopify(session: httpx.AsyncClient, vendor: str, base_url: str, 
                     "price": float(p.get("price", 0)),
                     "in_stock": p.get("available", True),
                     "link": f"{base_url}{p.get('url', '')}",
-                    "raw_desc": BeautifulSoup(p.get("body", ""), "html.parser").get_text(" ", strip=True)[:150]
+                    "raw_desc": BeautifulSoup(p.get("body", ""), "html.parser").get_text(" ", strip=True)[:100]
                 })
             if results:
                 return results
@@ -252,8 +269,8 @@ async def fetch_shopify(session: httpx.AsyncClient, vendor: str, base_url: str, 
 
     search_url = f"{base_url}/search?q={quote_plus(query)}"
     try:
-        resp = await session.get(f"https://r.jina.ai/{search_url}", timeout=10.0)
-        if resp.status_code == 200 and len(resp.text) > 150:
+        resp = await session.get(f"https://r.jina.ai/{search_url}", timeout=8.0)
+        if resp.status_code == 200 and len(resp.text) > 100:
             results.append({
                 "vendor": vendor,
                 "raw_markdown": clean_markdown_noise(resp.text),
@@ -265,9 +282,8 @@ async def fetch_shopify(session: httpx.AsyncClient, vendor: str, base_url: str, 
 
 async def fetch_custom_and_notion(session: httpx.AsyncClient, vendor: str, target_url: str) -> list[dict]:
     results = []
-    jina_url = f"https://r.jina.ai/{target_url}"
     try:
-        resp = await session.get(jina_url, timeout=12.0)
+        resp = await session.get(f"https://r.jina.ai/{target_url}", timeout=10.0)
         if resp.status_code == 200 and len(resp.text) > 100:
             results.append({
                 "vendor": vendor,
@@ -304,29 +320,25 @@ async def gather_all_vendors(queries: list[str], selected_vendors: list[str]) ->
                 all_raw.extend(r)
     return all_raw
 
-# ----------------- STEP 3: GEMINI FILTER & EXTRACTION -----------------
+# ----------------- STEP 3: GEMINI FILTER WITH LOCAL FALLBACK -----------------
 def filter_and_structure_results(
     client: genai.Client,
     model_name: str,
     item_name: str,
     specs: str,
-    raw_candidates: list[dict],
-    grounded_text: str
+    raw_candidates: list[dict]
 ) -> list[dict]:
-    if not raw_candidates and not grounded_text:
+    if not raw_candidates:
         return []
 
-    # Trim payloads to avoid token rate limits on free tier
-    trimmed_candidates = json.dumps(raw_candidates)[:12000]
+    # Send a small trimmed slice of candidates to avoid token limits
+    trimmed_candidates = json.dumps(raw_candidates[:8])
 
     prompt = f"""
-    You are an expert Indian drone hardware procurement agent.
+    Extract matching drone parts into valid JSON matching the schema.
     Target Item: {item_name}
-    Specification: {specs if specs else 'Any'}
-
-    Extract matching products from the scraped data into valid JSON matching the schema.
-    Ignore out-of-stock items. Extract Product Name, Specification, Brand Name, Vendor Name, SKU (or 'N/A'), numeric Rate in INR, and direct Link.
-
+    Specs: {specs if specs else 'Any'}
+    Exclude out of stock items.
     Data:
     {trimmed_candidates}
     """
@@ -342,14 +354,18 @@ def filter_and_structure_results(
             ),
         )
         parsed = json.loads(res.text)
-        return parsed.get("matched_parts", [])
-    except Exception as e:
-        st.error(f"Gemini processing error (rate limit reached): {e}")
-        return []
+        items = parsed.get("matched_parts", [])
+        if items:
+            return items
+    except Exception:
+        pass
+
+    # If Gemini hits rate limit, seamlessly fall back to local regex parser
+    return fallback_regex_parser(raw_candidates, item_name)
 
 # ----------------- STREAMLIT UI LAYOUT -----------------
 st.title("🛸 Indian Drone Vendor Part Finder Agent")
-st.caption("Live parallel search across 13 Indian FPV & UAV vendors — Powered by Gemini Flash + Auto-Retry Backoff")
+st.caption("Live parallel search across 13 Indian FPV & UAV vendors — Powered by Gemini + Local Zero-Token Fallback")
 
 with st.sidebar:
     st.header("⚙️ Agent Configuration")
@@ -390,17 +406,17 @@ if st.button("🔍 Search Across All Vendors", type="primary", use_container_wid
     else:
         client = genai.Client(api_key=api_key)
 
-        with st.status("Running robust multi-vendor procurement agent...", expanded=True) as status:
+        with st.status("Running multi-vendor procurement agent...", expanded=True) as status:
             st.write("🧠 Expanding search terms...")
-            search_queries = expand_search_queries(client, selected_model, item_input, spec_input)
+            search_queries = expand_search_queries(client, selected_model, item_input)
             st.write(f"**Search Variations:** `{', '.join(search_queries)}`")
 
-            st.write(f"🌐 Scraping {len(selected_vendors)} vendor stores directly + via Jina Reader...")
+            st.write(f"🌐 Scraping {len(selected_vendors)} vendor stores...")
             raw_data = asyncio.run(gather_all_vendors(search_queries, selected_vendors))
-            st.write(f"📥 Collected `{len(raw_data)}` direct responses. Structuring table with Gemini...")
+            st.write(f"📥 Collected `{len(raw_data)}` responses. Processing structured table...")
 
-            matched_items = filter_and_structure_results(client, selected_model, item_input, spec_input, raw_data, "")
-            status.update(label=f"Search complete! Found {len(matched_items)} matching in-stock items.", state="complete")
+            matched_items = filter_and_structure_results(client, selected_model, item_input, spec_input, raw_data)
+            status.update(label=f"Search complete! Found {len(matched_items)} matching items.", state="complete")
 
         if matched_items:
             df = pd.DataFrame(matched_items)
@@ -437,7 +453,7 @@ if st.button("🔍 Search Across All Vendors", type="primary", use_container_wid
                 "📥 Download Comparison Table (CSV)",
                 data=csv_data,
                 file_name=f"drone_parts_{item_input.replace(' ', '_')}.csv",
-                mime="text/css" if False else "text/csv"
+                mime="text/csv"
             )
         else:
-            st.info("No matching products found or free-tier rate limit was hit. Wait 10 seconds and try searching again.")
+            st.info("No matching products found. Try a different part name.")
