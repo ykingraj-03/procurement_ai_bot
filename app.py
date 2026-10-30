@@ -20,19 +20,19 @@ st.set_page_config(
 # ----------------- STRUCTURED OUTPUT SCHEMA -----------------
 class DronePartItem(BaseModel):
     product_name: str = Field(description="Full clean title of the product")
-    specification: str = Field(description="Key technical specs extracted (e.g., KV, Voltage, Current, Size, Frequency)")
-    brand_name: str = Field(description="Manufacturer or brand name (e.g., SpeedyBee, T-Motor, Hobbywing, Radiomaster, Generic)")
+    specification: str = Field(description="Key technical specs extracted or inferred (e.g., ELRS 2.4GHz, KV, Current, Size)")
+    brand_name: str = Field(description="Manufacturer or brand name (e.g., RadioMaster, SpeedyBee, T-Motor, Generic)")
     vendor_name: str = Field(description="Store name where product is listed")
     sku_name: str = Field(description="SKU or product code if available, else 'N/A'")
-    rate: float = Field(description="Numeric price in INR (Rs/₹). Must be greater than 0.")
-    in_stock: bool = Field(description="True ONLY if the item is currently available to buy/in stock")
+    rate: float = Field(description="Numeric price in INR (Rs/₹). Use 0 if price is not shown on snippet.")
+    in_stock: bool = Field(description="True unless explicitly marked Out of Stock or Sold Out")
     link: str = Field(description="Direct URL to the product page")
 
 class SourcingResponse(BaseModel):
     matched_parts: list[DronePartItem]
 
 class SearchKeywords(BaseModel):
-    keywords: list[str] = Field(description="3 to 4 short search keyword variations for vendor search bars")
+    keywords: list[str] = Field(description="2 to 3 short search keyword variations for vendor search bars")
 
 # ----------------- VENDOR REGISTRY -----------------
 WOOCOMMERCE_VENDORS = {
@@ -56,10 +56,26 @@ CUSTOM_VENDORS = {
     "UAV Marketplace": "https://www.uavmarketplace.in/search?q=",
 }
 
+VENDOR_DOMAINS = {
+    "Robu": "robu.in",
+    "Zbotic": "zbotic.in",
+    "Tujo RC": "tujorc.com",
+    "Quadkart": "quadkart.in",
+    "Design Info": "designinfo.in",
+    "Anubis Tech": "anubisrc.com",
+    "FPV Guru": "fpvguru.in",
+    "Hi Tech XYZ": "hitechxyz.in",
+    "Xrobo": "xrobo.in",
+    "Robokits": "robokits.co.in",
+    "Indian Robo Store": "indianrobostore.com",
+    "UAV Marketplace": "uavmarketplace.in",
+}
+
 DANNY_NOTION_URL = "https://danny8.notion.site/Danny-s-Inventory-List-214fd82319444160b57ffdf5ebb118bd"
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/json,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
 }
 
@@ -69,11 +85,10 @@ def expand_search_queries(client: genai.Client, item_name: str, specs: str) -> l
     You are an FPV and UAV hardware sourcing specialist in India.
     User is looking for:
     Item Name: {item_name}
-    Required Specifications: {specs}
+    Optional Specifications: {specs if specs else 'Any'}
 
-    Generate 3 short, high-recall search queries that Indian drone e-commerce search bars (WooCommerce/Shopify) will match.
-    Include common naming variations or abbreviations (e.g., 'ELRS' vs 'ExpressLRS', 'FC' vs 'Flight Controller', '50A' vs '50 Amp').
-    Keep each query between 2 and 4 words maximum so vendor search bars don't fail.
+    Generate 2 short, high-recall search queries (2 to 4 words max) for Indian drone e-commerce search bars.
+    Do NOT combine unrelated products. Keep queries simple (e.g., 'Radiomaster Pocket', 'Pocket ELRS').
     """
     try:
         res = client.models.generate_content(
@@ -89,49 +104,93 @@ def expand_search_queries(client: genai.Client, item_name: str, specs: str) -> l
         queries = data.get("keywords", [item_name])
         if item_name not in queries:
             queries.insert(0, item_name)
-        return queries[:3]
+        return queries[:2]
     except Exception:
         return [item_name]
 
-# ----------------- STEP 2: ASYNC VENDOR SCRAPERS -----------------
-async def fetch_woocommerce(session: httpx.AsyncClient, vendor: str, base_url: str, query: str) -> list[dict]:
-    """Tries WooCommerce Store API first, falls back to HTML search parsing."""
-    results = []
-    api_url = f"{base_url}/wp-json/wc/store/v1/products?search={quote_plus(query)}&per_page=12"
+# ----------------- STEP 2A: GOOGLE SEARCH GROUNDING (BYPASSES CLOUDFLARE) -----------------
+def search_vendors_via_google_grounding(client: genai.Client, item_name: str, specs: str, selected_vendors: list[str]) -> str:
+    """Uses Gemini's built-in Google Search tool to find exact product pages, prices, and stock across vendor domains."""
+    active_domains = [VENDOR_DOMAINS[v] for v in selected_vendors if v in VENDOR_DOMAINS]
+    if not active_domains:
+        return ""
+
+    site_filter = " OR ".join([f"site:{d}" for d in active_domains])
+    search_prompt = f"""
+    Search Indian drone vendors for: {item_name} {specs}
+    Specifically check results matching ({site_filter}).
+    List every matching product found across these stores, including:
+    - Exact Product Name
+    - Vendor Name
+    - Price in INR (₹)
+    - SKU (if visible)
+    - Stock Status (In stock / Out of stock)
+    - Exact Product URL
+    - Specifications mentioned
+    """
     try:
-        resp = await session.get(api_url, timeout=12.0)
+        res = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=search_prompt,
+            config=types.GenerateContentConfig(
+                tools=[types.Tool(google_search=types.GoogleSearch())],
+                temperature=0.0,
+            ),
+        )
+        # Extract grounding URLs if available in metadata
+        grounding_links = []
+        if res.candidates and res.candidates[0].grounding_metadata:
+            chunks = res.candidates[0].grounding_metadata.grounding_chunks or []
+            for chunk in chunks:
+                if chunk.web and chunk.web.uri:
+                    grounding_links.append(f"{chunk.web.title}: {chunk.web.uri}")
+        return (res.text or "") + "\nGrounded URLs:\n" + "\n".join(grounding_links)
+    except Exception:
+        return ""
+
+# ----------------- STEP 2B: ASYNC DIRECT & JINA SCRAPERS -----------------
+async def fetch_woocommerce(session: httpx.AsyncClient, vendor: str, base_url: str, query: str) -> list[dict]:
+    """Tries WooCommerce Store API -> Direct HTML -> Jina Reader Cloud Bypass."""
+    results = []
+    # 1. Try WooCommerce Store JSON API
+    api_url = f"{base_url}/wp-json/wc/store/v1/products?search={quote_plus(query)}&per_page=10"
+    try:
+        resp = await session.get(api_url, timeout=10.0)
         if resp.status_code == 200 and "application/json" in resp.headers.get("content-type", ""):
             items = resp.json()
-            for item in items:
-                if not item.get("is_in_stock", True):
-                    continue
-                prices = item.get("prices", {})
-                raw_price = prices.get("price", "0")
-                minor_unit = prices.get("currency_minor_unit", 2)
-                price_val = float(raw_price) / (10 ** minor_unit) if raw_price else 0
-                results.append({
-                    "vendor": vendor,
-                    "title": item.get("name", ""),
-                    "sku": item.get("sku", "N/A"),
-                    "price": price_val,
-                    "in_stock": item.get("is_in_stock", True),
-                    "link": item.get("permalink", ""),
-                    "raw_desc": BeautifulSoup(item.get("short_description", ""), "html.parser").get_text(" ", strip=True)[:250]
-                })
-            if results:
-                return results
+            if isinstance(items, list):
+                for item in items:
+                    if not item.get("is_in_stock", True):
+                        continue
+                    prices = item.get("prices", {})
+                    raw_price = prices.get("price", "0")
+                    minor_unit = prices.get("currency_minor_unit", 2)
+                    price_val = float(raw_price) / (10 ** minor_unit) if raw_price else 0
+                    results.append({
+                        "vendor": vendor,
+                        "title": item.get("name", ""),
+                        "sku": item.get("sku", "N/A"),
+                        "price": price_val,
+                        "in_stock": item.get("is_in_stock", True),
+                        "link": item.get("permalink", ""),
+                        "raw_desc": BeautifulSoup(item.get("short_description", ""), "html.parser").get_text(" ", strip=True)[:200]
+                    })
+                if results:
+                    return results
     except Exception:
         pass
 
-    # Fallback: Standard WooCommerce HTML Search
+    # 2. Try Direct HTML Search (Fixed regex: removed 'read more')
     search_url = f"{base_url}/?s={quote_plus(query)}&post_type=product"
     try:
-        resp = await session.get(search_url, timeout=12.0)
+        resp = await session.get(search_url, timeout=10.0)
         if resp.status_code == 200:
             soup = BeautifulSoup(resp.text, "html.parser")
-            for prod in soup.select(".product, li.product, .product-grid-item")[:10]:
+            cards = soup.select(".product, li.product, .product-grid-item, .type-product")
+            for prod in cards[:10]:
                 text_blob = prod.get_text(" ", strip=True)
-                if re.search(r"out of stock|sold out|read more", text_blob, re.I):
+                # Only skip if explicitly marked out of stock or sold out
+                if re.search(r"out of stock|sold out", text_blob, re.I):
                     continue
                 a_tag = prod.select_one("a.woocommerce-LoopProduct-link, h2 a, h3 a, .product-title a, a")
                 link = a_tag["href"] if a_tag and a_tag.has_attr("href") else search_url
@@ -140,16 +199,32 @@ async def fetch_woocommerce(session: httpx.AsyncClient, vendor: str, base_url: s
                     "raw_snippet": text_blob[:350],
                     "link": link
                 })
+            if results:
+                return results
     except Exception:
         pass
+
+    # 3. Fallback: Jina Reader Headless Proxy (Bypasses Cloudflare 403 & JS Search like Robu)
+    try:
+        jina_url = f"https://r.jina.ai/{search_url}"
+        resp = await session.get(jina_url, timeout=14.0)
+        if resp.status_code == 200 and len(resp.text) > 150:
+            results.append({
+                "vendor": vendor,
+                "raw_markdown": resp.text[:3500],
+                "link": search_url
+            })
+    except Exception:
+        pass
+
     return results
 
 async def fetch_shopify(session: httpx.AsyncClient, vendor: str, base_url: str, query: str) -> list[dict]:
-    """Uses Shopify Predictive Search JSON API."""
+    """Uses Shopify Predictive Search JSON API with Jina fallback."""
     results = []
     api_url = f"{base_url}/search/suggest.json?q={quote_plus(query)}&resources[type]=product&resources[limit]=10"
     try:
-        resp = await session.get(api_url, timeout=12.0)
+        resp = await session.get(api_url, timeout=10.0)
         if resp.status_code == 200:
             data = resp.json()
             products = data.get("resources", {}).get("results", {}).get("products", [])
@@ -164,14 +239,28 @@ async def fetch_shopify(session: httpx.AsyncClient, vendor: str, base_url: str, 
                     "price": float(p.get("price", 0)),
                     "in_stock": p.get("available", True),
                     "link": f"{base_url}{p.get('url', '')}",
-                    "raw_desc": BeautifulSoup(p.get("body", ""), "html.parser").get_text(" ", strip=True)[:250]
+                    "raw_desc": BeautifulSoup(p.get("body", ""), "html.parser").get_text(" ", strip=True)[:200]
                 })
+            if results:
+                return results
+    except Exception:
+        pass
+
+    # Fallback via Jina
+    search_url = f"{base_url}/search?q={quote_plus(query)}"
+    try:
+        resp = await session.get(f"https://r.jina.ai/{search_url}", timeout=12.0)
+        if resp.status_code == 200 and len(resp.text) > 150:
+            results.append({
+                "vendor": vendor,
+                "raw_markdown": resp.text[:3000],
+                "link": search_url
+            })
     except Exception:
         pass
     return results
 
 async def fetch_custom_and_notion(session: httpx.AsyncClient, vendor: str, target_url: str) -> list[dict]:
-    """Uses Jina Reader proxy to cleanly parse JS-rendered stores (UAV Marketplace, Indian Robo Store, Notion)."""
     results = []
     jina_url = f"https://r.jina.ai/{target_url}"
     try:
@@ -179,7 +268,7 @@ async def fetch_custom_and_notion(session: httpx.AsyncClient, vendor: str, targe
         if resp.status_code == 200 and len(resp.text) > 100:
             results.append({
                 "vendor": vendor,
-                "raw_markdown": resp.text[:4500],
+                "raw_markdown": resp.text[:3500],
                 "link": target_url
             })
     except Exception:
@@ -191,24 +280,18 @@ async def gather_all_vendors(queries: list[str], selected_vendors: list[str]) ->
     primary_query = queries[0]
     async with httpx.AsyncClient(headers=HEADERS, follow_redirects=True) as session:
         tasks = []
-        # Queue WooCommerce tasks across expanded queries
         for vendor, url in WOOCOMMERCE_VENDORS.items():
             if vendor in selected_vendors:
-                for q in queries[:2]:
-                    tasks.append(fetch_woocommerce(session, vendor, url, q))
+                tasks.append(fetch_woocommerce(session, vendor, url, primary_query))
 
-        # Queue Shopify tasks
         for vendor, url in SHOPIFY_VENDORS.items():
             if vendor in selected_vendors:
-                for q in queries[:2]:
-                    tasks.append(fetch_shopify(session, vendor, url, q))
+                tasks.append(fetch_shopify(session, vendor, url, primary_query))
 
-        # Queue Custom stores
         for vendor, search_prefix in CUSTOM_VENDORS.items():
             if vendor in selected_vendors:
                 tasks.append(fetch_custom_and_notion(session, vendor, f"{search_prefix}{quote_plus(primary_query)}"))
 
-        # Queue Danny's Notion Inventory
         if "Danny’s Inventory List" in selected_vendors:
             tasks.append(fetch_custom_and_notion(session, "Danny’s Inventory List", DANNY_NOTION_URL))
 
@@ -219,26 +302,39 @@ async def gather_all_vendors(queries: list[str], selected_vendors: list[str]) ->
     return all_raw
 
 # ----------------- STEP 3: GEMINI SEMANTIC FILTER & EXTRACTION -----------------
-def filter_and_structure_results(client: genai.Client, item_name: str, specs: str, raw_candidates: list[dict]) -> list[dict]:
-    if not raw_candidates:
+def filter_and_structure_results(
+    client: genai.Client,
+    item_name: str,
+    specs: str,
+    raw_candidates: list[dict],
+    grounded_text: str
+) -> list[dict]:
+    if not raw_candidates and not grounded_text:
         return []
 
     prompt = f"""
-    You are an expert drone hardware procurement agent.
+    You are an expert Indian drone hardware procurement agent.
     The user is searching for:
     - Target Item: {item_name}
-    - Required Specification: {specs}
+    - Optional Specification Preference: {specs if specs else 'Any matching version'}
 
-    Below is raw scraped product data from Indian drone vendors.
+    Below are two data sources:
+    1) Live Google-Grounded Vendor Listings
+    2) Direct Scraped Vendor Pages
+
     Rules:
-    1. Filter for products that genuinely match the target item and specification (even if named slightly differently, e.g., synonym or model shorthand).
-    2. Exclude irrelevant accessories (e.g., if user wants a 'Frame', exclude replacement arms or screws unless requested; if user wants a 'Motor', exclude spare bells).
-    3. Strictly exclude any item marked 'Out of Stock', 'Sold Out', or 'in_stock: false'.
-    4. Extract Product Name, concise Specification, Brand Name, Vendor Name, SKU (or 'N/A'), numeric Rate in INR, and direct Link.
-    5. Deduplicate identical product links.
+    1. Include ALL products that match the Target Item '{item_name}' (including variants like ELRS, CC2500, Charcoal, Transparent, Crush, V2, etc.).
+    2. Do NOT reject a matching product just because full specifications aren't written in the short search card—infer known standard specs (e.g., '2.4GHz ELRS / EdgeTX' for RadioMaster Pocket) or write the variant details shown in the title.
+    3. If 'Optional Specification Preference' ({specs}) is provided and belongs to the item, prioritize those specs, but if the user accidentally entered a spec for a different component, still return matches for the Target Item.
+    4. Exclude items explicitly marked 'Out of Stock' or 'Sold Out'.
+    5. Extract Product Name, Specification, Brand Name, Vendor Name, SKU (or 'N/A'), numeric Rate in INR, and direct Link.
+    6. Deduplicate identical URLs.
 
-    Raw Scraped Data:
-    {json.dumps(raw_candidates)[:28000]}
+    --- SOURCE 1: GOOGLE GROUNDED VENDOR RESULTS ---
+    {grounded_text[:12000]}
+
+    --- SOURCE 2: DIRECT SCRAPED VENDOR DATA ---
+    {json.dumps(raw_candidates)[:22000]}
     """
     try:
         res = client.models.generate_content(
@@ -258,7 +354,7 @@ def filter_and_structure_results(client: genai.Client, item_name: str, specs: st
 
 # ----------------- STREAMLIT UI LAYOUT -----------------
 st.title("🛸 Indian Drone Vendor Part Finder Agent")
-st.caption("Live parallel search across 13 Indian FPV & UAV vendors — Powered by Gemini 2.5 Flash")
+st.caption("Live parallel search across 13 Indian FPV & UAV vendors — Powered by Gemini 2.5 Flash + Search Grounding")
 
 with st.sidebar:
     st.header("⚙️ Agent Configuration")
@@ -282,9 +378,15 @@ with st.sidebar:
 
 col1, col2 = st.columns([1, 1])
 with col1:
-    item_input = st.text_input("📦 Item Name / Model", placeholder="e.g., SpeedyBee F405 V4 Stack, 2207 Brushless Motor, ELRS Receiver")
+    item_input = st.text_input(
+        "📦 Item Name / Model",
+        placeholder="e.g., Radiomaster Pocket, SpeedyBee F405 V4, 5 Inch Frame"
+    )
 with col2:
-    spec_input = st.text_input("🔧 Required Specifications", placeholder="e.g., 55A 4-in-1 ESC, 1950KV 6S, 2.4GHz Nano")
+    spec_input = st.text_input(
+        "🔧 Required Specifications (Optional — for the same item)",
+        placeholder="Leave blank for all variants, or enter e.g. ELRS, 55A, 1950KV"
+    )
 
 if st.button("🔍 Search Across All Vendors", type="primary", use_container_width=True):
     if not api_key:
@@ -294,24 +396,34 @@ if st.button("🔍 Search Across All Vendors", type="primary", use_container_wid
     else:
         client = genai.Client(api_key=api_key)
 
-        with st.status("Running intelligent multi-vendor procurement agent...", expanded=True) as status:
-            st.write("🧠 Expanding search terms for naming variations...")
+        with st.status("Running hybrid multi-vendor procurement agent...", expanded=True) as status:
+            st.write("🧠 Expanding search terms...")
             search_queries = expand_search_queries(client, item_input, spec_input)
-            st.write(f"**Generated Search Variations:** `{', '.join(search_queries)}`")
+            st.write(f"**Search Variations:** `{', '.join(search_queries)}`")
 
-            st.write(f"🌐 Querying {len(selected_vendors)} Indian drone stores in parallel...")
+            st.write("🔎 Running Google Search Grounding across Indian vendor domains (bypasses Cloudflare)...")
+            grounded_results = search_vendors_via_google_grounding(client, item_input, spec_input, selected_vendors)
+
+            st.write(f"🌐 Scraping {len(selected_vendors)} vendor stores directly + via Jina Reader...")
             raw_data = asyncio.run(gather_all_vendors(search_queries, selected_vendors))
-            st.write(f"📥 Collected `{len(raw_data)}` raw product listings. Verifying specs & stock with Gemini...")
+            st.write(f"📥 Collected `{len(raw_data)}` direct vendor responses + grounded index data. Structuring table...")
 
-            matched_items = filter_and_structure_results(client, item_input, spec_input, raw_data)
+            matched_items = filter_and_structure_results(client, item_input, spec_input, raw_data, grounded_results)
             status.update(label=f"Search complete! Found {len(matched_items)} matching in-stock items.", state="complete")
+
+        with st.expander("🛠️ View Raw Scraped Diagnostic Data"):
+            st.markdown("**Google Grounded Vendor Summary:**")
+            st.text(grounded_results[:2000] if grounded_results else "No grounded text returned.")
+            st.markdown(f"**Direct Scraper Payloads ({len(raw_data)} items):**")
+            st.json(raw_data[:10])
 
         if matched_items:
             df = pd.DataFrame(matched_items)
             df = df[df["in_stock"] == True]
-            df = df.sort_values(by="rate", ascending=True).reset_index(drop=True)
+            # Sort low to high cost (put items with rate > 0 first, then rate == 0 at bottom)
+            df["_sort_price"] = df["rate"].apply(lambda x: x if x and x > 0 else 9999999)
+            df = df.sort_values(by="_sort_price", ascending=True).drop(columns=["_sort_price"]).reset_index(drop=True)
 
-            # Rename and order columns to exact requirement
             df_display = df[[
                 "product_name", "specification", "brand_name",
                 "vendor_name", "sku_name", "rate", "link"
@@ -344,4 +456,4 @@ if st.button("🔍 Search Across All Vendors", type="primary", use_container_wid
                 mime="text/csv"
             )
         else:
-            st.info("No in-stock products matched your exact specifications across the selected vendors. Try broadening your specification keywords.")
+            st.info("No in-stock products found. Check the 'View Raw Scraped Diagnostic Data' expander above to inspect vendor responses.")
