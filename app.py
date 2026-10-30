@@ -20,7 +20,7 @@ st.set_page_config(
 # ----------------- STRUCTURED OUTPUT SCHEMA -----------------
 class DronePartItem(BaseModel):
     product_name: str = Field(description="Full clean title of the product")
-    specification: str = Field(description="Key technical specs extracted or inferred (e.g., ELRS 2.4GHz, KV, Current, Size)")
+    specification: str = Field(description="Key technical specs extracted or inferred (e.g., KV, Voltage, Current, Size, ELRS)")
     brand_name: str = Field(description="Manufacturer or brand name (e.g., RadioMaster, SpeedyBee, T-Motor, Generic)")
     vendor_name: str = Field(description="Store name where product is listed")
     sku_name: str = Field(description="SKU or product code if available, else 'N/A'")
@@ -74,13 +74,55 @@ VENDOR_DOMAINS = {
 DANNY_NOTION_URL = "https://danny8.notion.site/Danny-s-Inventory-List-214fd82319444160b57ffdf5ebb118bd"
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/json,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
 }
 
+# ----------------- HELPER: MODEL FALLBACK CALLER -----------------
+def call_gemini_with_fallback(client: genai.Client, preferred_model: str, contents: str, config: types.GenerateContentConfig):
+    """Automatically tries fallback model names if a model ID returns 404 NOT_FOUND."""
+    candidate_models = [
+        preferred_model,
+        "gemini-3.0-flash",
+        "gemini-3-flash-preview",
+        "gemini-2.5-flash-preview-05-20",
+        "gemini-2.0-flash",
+    ]
+    # Remove duplicates while preserving order
+    seen = set()
+    models_to_try = [m for m in candidate_models if not (m in seen or seen.add(m))]
+
+    last_err = None
+    for model_name in models_to_try:
+        try:
+            return client.models.generate_content(
+                model=model_name,
+                contents=contents,
+                config=config,
+            )
+        except Exception as e:
+            last_err = e
+            if "404" in str(e) or "NOT_FOUND" in str(e):
+                continue
+            raise e
+    raise last_err
+
+# ----------------- HELPER: CLEAN JINA MARKDOWN NOISE -----------------
+def clean_markdown_noise(md_text: str) -> str:
+    """Strips image tags, social media links, and header clutter so actual product listings aren't truncated."""
+    # Remove markdown image links like [![Image...](...)](...) or ![Image...](...)
+    cleaned = re.sub(r"!\[.*?\]\(.*?\)", "", md_text)
+    # Collapse excessive whitespace and empty bullet lines
+    lines = [line.strip() for line in cleaned.splitlines() if len(line.strip()) > 3]
+    filtered_lines = [
+        l for l in lines
+        if not any(skip in l.lower() for skip in ["facebook.com", "instagram.com", "linkedin.com", "youtube.com", "twitter.com", "customer support"])
+    ]
+    return "\n".join(filtered_lines)[:4500]
+
 # ----------------- STEP 1: QUERY EXPANSION -----------------
-def expand_search_queries(client: genai.Client, item_name: str, specs: str) -> list[str]:
+def expand_search_queries(client: genai.Client, model_name: str, item_name: str, specs: str) -> list[str]:
     prompt = f"""
     You are an FPV and UAV hardware sourcing specialist in India.
     User is looking for:
@@ -88,13 +130,14 @@ def expand_search_queries(client: genai.Client, item_name: str, specs: str) -> l
     Optional Specifications: {specs if specs else 'Any'}
 
     Generate 2 short, high-recall search queries (2 to 4 words max) for Indian drone e-commerce search bars.
-    Do NOT combine unrelated products. Keep queries simple (e.g., 'Radiomaster Pocket', 'Pocket ELRS').
+    Keep queries simple (e.g., '1800KV motor', '2207 1800KV', 'Radiomaster Pocket').
     """
     try:
-        res = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt,
-            config=types.GenerateContentConfig(
+        res = call_gemini_with_fallback(
+            client,
+            model_name,
+            prompt,
+            types.GenerateContentConfig(
                 response_mime_type="application/json",
                 response_schema=SearchKeywords,
                 temperature=0.1,
@@ -108,9 +151,8 @@ def expand_search_queries(client: genai.Client, item_name: str, specs: str) -> l
     except Exception:
         return [item_name]
 
-# ----------------- STEP 2A: GOOGLE SEARCH GROUNDING (BYPASSES CLOUDFLARE) -----------------
-def search_vendors_via_google_grounding(client: genai.Client, item_name: str, specs: str, selected_vendors: list[str]) -> str:
-    """Uses Gemini's built-in Google Search tool to find exact product pages, prices, and stock across vendor domains."""
+# ----------------- STEP 2A: GOOGLE SEARCH GROUNDING -----------------
+def search_vendors_via_google_grounding(client: genai.Client, model_name: str, item_name: str, specs: str, selected_vendors: list[str]) -> str:
     active_domains = [VENDOR_DOMAINS[v] for v in selected_vendors if v in VENDOR_DOMAINS]
     if not active_domains:
         return ""
@@ -129,15 +171,15 @@ def search_vendors_via_google_grounding(client: genai.Client, item_name: str, sp
     - Specifications mentioned
     """
     try:
-        res = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=search_prompt,
-            config=types.GenerateContentConfig(
+        res = call_gemini_with_fallback(
+            client,
+            model_name,
+            search_prompt,
+            types.GenerateContentConfig(
                 tools=[types.Tool(google_search=types.GoogleSearch())],
                 temperature=0.0,
             ),
         )
-        # Extract grounding URLs if available in metadata
         grounding_links = []
         if res.candidates and res.candidates[0].grounding_metadata:
             chunks = res.candidates[0].grounding_metadata.grounding_chunks or []
@@ -145,12 +187,11 @@ def search_vendors_via_google_grounding(client: genai.Client, item_name: str, sp
                 if chunk.web and chunk.web.uri:
                     grounding_links.append(f"{chunk.web.title}: {chunk.web.uri}")
         return (res.text or "") + "\nGrounded URLs:\n" + "\n".join(grounding_links)
-    except Exception:
-        return ""
+    except Exception as e:
+        return f"Grounding note: {e}"
 
 # ----------------- STEP 2B: ASYNC DIRECT & JINA SCRAPERS -----------------
 async def fetch_woocommerce(session: httpx.AsyncClient, vendor: str, base_url: str, query: str) -> list[dict]:
-    """Tries WooCommerce Store API -> Direct HTML -> Jina Reader Cloud Bypass."""
     results = []
     # 1. Try WooCommerce Store JSON API
     api_url = f"{base_url}/wp-json/wc/store/v1/products?search={quote_plus(query)}&per_page=10"
@@ -180,7 +221,7 @@ async def fetch_woocommerce(session: httpx.AsyncClient, vendor: str, base_url: s
     except Exception:
         pass
 
-    # 2. Try Direct HTML Search (Fixed regex: removed 'read more')
+    # 2. Try Direct HTML Search
     search_url = f"{base_url}/?s={quote_plus(query)}&post_type=product"
     try:
         resp = await session.get(search_url, timeout=10.0)
@@ -189,7 +230,6 @@ async def fetch_woocommerce(session: httpx.AsyncClient, vendor: str, base_url: s
             cards = soup.select(".product, li.product, .product-grid-item, .type-product")
             for prod in cards[:10]:
                 text_blob = prod.get_text(" ", strip=True)
-                # Only skip if explicitly marked out of stock or sold out
                 if re.search(r"out of stock|sold out", text_blob, re.I):
                     continue
                 a_tag = prod.select_one("a.woocommerce-LoopProduct-link, h2 a, h3 a, .product-title a, a")
@@ -204,14 +244,14 @@ async def fetch_woocommerce(session: httpx.AsyncClient, vendor: str, base_url: s
     except Exception:
         pass
 
-    # 3. Fallback: Jina Reader Headless Proxy (Bypasses Cloudflare 403 & JS Search like Robu)
+    # 3. Fallback: Jina Reader Headless Proxy (Cleaned of header/image noise)
     try:
         jina_url = f"https://r.jina.ai/{search_url}"
         resp = await session.get(jina_url, timeout=14.0)
         if resp.status_code == 200 and len(resp.text) > 150:
             results.append({
                 "vendor": vendor,
-                "raw_markdown": resp.text[:3500],
+                "raw_markdown": clean_markdown_noise(resp.text),
                 "link": search_url
             })
     except Exception:
@@ -220,7 +260,6 @@ async def fetch_woocommerce(session: httpx.AsyncClient, vendor: str, base_url: s
     return results
 
 async def fetch_shopify(session: httpx.AsyncClient, vendor: str, base_url: str, query: str) -> list[dict]:
-    """Uses Shopify Predictive Search JSON API with Jina fallback."""
     results = []
     api_url = f"{base_url}/search/suggest.json?q={quote_plus(query)}&resources[type]=product&resources[limit]=10"
     try:
@@ -246,14 +285,13 @@ async def fetch_shopify(session: httpx.AsyncClient, vendor: str, base_url: str, 
     except Exception:
         pass
 
-    # Fallback via Jina
     search_url = f"{base_url}/search?q={quote_plus(query)}"
     try:
         resp = await session.get(f"https://r.jina.ai/{search_url}", timeout=12.0)
         if resp.status_code == 200 and len(resp.text) > 150:
             results.append({
                 "vendor": vendor,
-                "raw_markdown": resp.text[:3000],
+                "raw_markdown": clean_markdown_noise(resp.text),
                 "link": search_url
             })
     except Exception:
@@ -268,7 +306,7 @@ async def fetch_custom_and_notion(session: httpx.AsyncClient, vendor: str, targe
         if resp.status_code == 200 and len(resp.text) > 100:
             results.append({
                 "vendor": vendor,
-                "raw_markdown": resp.text[:3500],
+                "raw_markdown": clean_markdown_noise(resp.text),
                 "link": target_url
             })
     except Exception:
@@ -304,6 +342,7 @@ async def gather_all_vendors(queries: list[str], selected_vendors: list[str]) ->
 # ----------------- STEP 3: GEMINI SEMANTIC FILTER & EXTRACTION -----------------
 def filter_and_structure_results(
     client: genai.Client,
+    model_name: str,
     item_name: str,
     specs: str,
     raw_candidates: list[dict],
@@ -323,24 +362,24 @@ def filter_and_structure_results(
     2) Direct Scraped Vendor Pages
 
     Rules:
-    1. Include ALL products that match the Target Item '{item_name}' (including variants like ELRS, CC2500, Charcoal, Transparent, Crush, V2, etc.).
-    2. Do NOT reject a matching product just because full specifications aren't written in the short search card—infer known standard specs (e.g., '2.4GHz ELRS / EdgeTX' for RadioMaster Pocket) or write the variant details shown in the title.
-    3. If 'Optional Specification Preference' ({specs}) is provided and belongs to the item, prioritize those specs, but if the user accidentally entered a spec for a different component, still return matches for the Target Item.
-    4. Exclude items explicitly marked 'Out of Stock' or 'Sold Out'.
-    5. Extract Product Name, Specification, Brand Name, Vendor Name, SKU (or 'N/A'), numeric Rate in INR, and direct Link.
-    6. Deduplicate identical URLs.
+    1. Include ALL products that match the Target Item '{item_name}' (including variants, different brands, KV ratings, or sizes).
+    2. Do NOT reject a matching product just because full specifications aren't written in the short search card—infer known standard specs or write the details shown in the title.
+    3. Exclude items explicitly marked 'Out of Stock' or 'Sold Out'.
+    4. Extract Product Name, Specification, Brand Name, Vendor Name, SKU (or 'N/A'), numeric Rate in INR, and direct Link.
+    5. Deduplicate identical URLs.
 
     --- SOURCE 1: GOOGLE GROUNDED VENDOR RESULTS ---
     {grounded_text[:12000]}
 
     --- SOURCE 2: DIRECT SCRAPED VENDOR DATA ---
-    {json.dumps(raw_candidates)[:22000]}
+    {json.dumps(raw_candidates)[:26000]}
     """
     try:
-        res = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt,
-            config=types.GenerateContentConfig(
+        res = call_gemini_with_fallback(
+            client,
+            model_name,
+            prompt,
+            types.GenerateContentConfig(
                 response_mime_type="application/json",
                 response_schema=SourcingResponse,
                 temperature=0.0,
@@ -354,7 +393,7 @@ def filter_and_structure_results(
 
 # ----------------- STREAMLIT UI LAYOUT -----------------
 st.title("🛸 Indian Drone Vendor Part Finder Agent")
-st.caption("Live parallel search across 13 Indian FPV & UAV vendors — Powered by Gemini 2.5 Flash + Search Grounding")
+st.caption("Live parallel search across 13 Indian FPV & UAV vendors — Powered by Gemini 3.0 Flash + Search Grounding")
 
 with st.sidebar:
     st.header("⚙️ Agent Configuration")
@@ -363,6 +402,12 @@ with st.sidebar:
         value=st.secrets.get("GEMINI_API_KEY", "") if "GEMINI_API_KEY" in st.secrets else "",
         type="password",
         help="Get your free API key from aistudio.google.com"
+    )
+    selected_model = st.selectbox(
+        "Gemini Model",
+        options=["gemini-3.0-flash", "gemini-3-flash-preview", "gemini-2.0-flash"],
+        index=0,
+        help="Defaults to gemini-3.0-flash (with automatic fallback if your API key tier uses a different model ID)."
     )
     all_vendor_names = (
         list(WOOCOMMERCE_VENDORS.keys())
@@ -380,12 +425,12 @@ col1, col2 = st.columns([1, 1])
 with col1:
     item_input = st.text_input(
         "📦 Item Name / Model",
-        placeholder="e.g., Radiomaster Pocket, SpeedyBee F405 V4, 5 Inch Frame"
+        placeholder="e.g., 1800KV Motor, Radiomaster Pocket, SpeedyBee F405 V4"
     )
 with col2:
     spec_input = st.text_input(
         "🔧 Required Specifications (Optional — for the same item)",
-        placeholder="Leave blank for all variants, or enter e.g. ELRS, 55A, 1950KV"
+        placeholder="Leave blank for all variants, or enter e.g. 2207, ELRS, 55A"
     )
 
 if st.button("🔍 Search Across All Vendors", type="primary", use_container_width=True):
@@ -398,29 +443,28 @@ if st.button("🔍 Search Across All Vendors", type="primary", use_container_wid
 
         with st.status("Running hybrid multi-vendor procurement agent...", expanded=True) as status:
             st.write("🧠 Expanding search terms...")
-            search_queries = expand_search_queries(client, item_input, spec_input)
+            search_queries = expand_search_queries(client, selected_model, item_input, spec_input)
             st.write(f"**Search Variations:** `{', '.join(search_queries)}`")
 
             st.write("🔎 Running Google Search Grounding across Indian vendor domains (bypasses Cloudflare)...")
-            grounded_results = search_vendors_via_google_grounding(client, item_input, spec_input, selected_vendors)
+            grounded_results = search_vendors_via_google_grounding(client, selected_model, item_input, spec_input, selected_vendors)
 
             st.write(f"🌐 Scraping {len(selected_vendors)} vendor stores directly + via Jina Reader...")
             raw_data = asyncio.run(gather_all_vendors(search_queries, selected_vendors))
             st.write(f"📥 Collected `{len(raw_data)}` direct vendor responses + grounded index data. Structuring table...")
 
-            matched_items = filter_and_structure_results(client, item_input, spec_input, raw_data, grounded_results)
+            matched_items = filter_and_structure_results(client, selected_model, item_input, spec_input, raw_data, grounded_results)
             status.update(label=f"Search complete! Found {len(matched_items)} matching in-stock items.", state="complete")
 
         with st.expander("🛠️ View Raw Scraped Diagnostic Data"):
             st.markdown("**Google Grounded Vendor Summary:**")
-            st.text(grounded_results[:2000] if grounded_results else "No grounded text returned.")
+            st.text(grounded_results[:2500] if grounded_results else "No grounded text returned.")
             st.markdown(f"**Direct Scraper Payloads ({len(raw_data)} items):**")
             st.json(raw_data[:10])
 
         if matched_items:
             df = pd.DataFrame(matched_items)
             df = df[df["in_stock"] == True]
-            # Sort low to high cost (put items with rate > 0 first, then rate == 0 at bottom)
             df["_sort_price"] = df["rate"].apply(lambda x: x if x and x > 0 else 9999999)
             df = df.sort_values(by="_sort_price", ascending=True).drop(columns=["_sort_price"]).reset_index(drop=True)
 
