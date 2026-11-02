@@ -1,6 +1,7 @@
 import asyncio
 import io
 import json
+import os
 import re
 import zipfile
 from urllib.parse import quote_plus, unquote
@@ -20,8 +21,8 @@ except ImportError:
 
 # ----------------- PAGE CONFIG -----------------
 st.set_page_config(
-    page_title="The Drone Builder",
-    page_icon="📋",
+    page_title="The Drone Builder — AI-Assisted Vendor Search & BOQ Builder",
+    page_icon="🛠️",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
@@ -39,28 +40,65 @@ st.markdown("""
     }
     .block-container {
         max-width: 1280px;
-        padding-top: 2rem;
+        padding-top: 1.5rem;
         padding-bottom: 3rem;
     }
     .app-header {
         background: #FFFFFF;
         border: 1px solid #E2E8F0;
         border-radius: 12px;
-        padding: 20px 24px;
+        padding: 16px 24px;
         margin-bottom: 20px;
         box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
     }
     .app-title {
-        font-size: 1.5rem;
+        font-size: 1.55rem;
         font-weight: 700;
         color: #0F172A;
         margin: 0 0 4px 0;
         letter-spacing: -0.02em;
     }
     .app-subtitle {
-        font-size: 0.9rem;
-        color: #64748B;
+        font-size: 0.93rem;
+        color: #475569;
         margin: 0;
+    }
+    .triage-card {
+        background: #FEF3C7;
+        border: 1px solid #F59E0B;
+        border-radius: 10px;
+        padding: 14px 18px;
+        margin: 12px 0 20px 0;
+        font-size: 0.88rem;
+        color: #78350F;
+    }
+    .triage-title {
+        font-weight: 700;
+        font-size: 0.95rem;
+        margin-bottom: 6px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+    }
+    .triage-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 10px;
+        margin-top: 12px;
+    }
+    .triage-button-card {
+        background: #FFFFFF;
+        border: 1px solid #D97706;
+        border-radius: 8px;
+        padding: 8px 12px;
+        cursor: pointer;
+        transition: all 0.2s ease-in-out;
+        font-size: 0.82rem;
+    }
+    .triage-button-card:hover {
+        background: #FFFBEB;
+        border-color: #B45309;
+        transform: translateY(-1px);
     }
     .ai-advisor-card {
         background: #FFFFFF;
@@ -167,18 +205,10 @@ CUSTOM_VENDORS = {
 }
 
 VENDOR_DOMAINS = {
-    "Robu": "robu.in",
-    "Zbotic": "zbotic.in",
-    "Tujo RC": "tujorc.com",
-    "Quadkart": "quadkart.in",
-    "Design Info": "designinfo.in",
-    "Anubis Tech": "anubisrc.com",
-    "FPV Guru": "fpvguru.in",
-    "Hi Tech XYZ": "hitechxyz.in",
-    "Xrobo": "xrobo.in",
-    "Indian Robo Store": "indianrobostore.com",
-    "Robokits": "robokits.co.in",
-    "UAV Marketplace": "uavmarketplace.in",
+    "Robu": "robu.in", "Zbotic": "zbotic.in", "Tujo RC": "tujorc.com",
+    "Quadkart": "quadkart.in", "Design Info": "designinfo.in", "Anubis Tech": "anubisrc.com",
+    "FPV Guru": "fpvguru.in", "Hi Tech XYZ": "hitechxyz.in", "Xrobo": "xrobo.in",
+    "Indian Robo Store": "indianrobostore.com", "Robokits": "robokits.co.in", "UAV Marketplace": "uavmarketplace.in",
 }
 
 DANNY_NOTION_URL = "https://danny8.notion.site/Danny-s-Inventory-List-214fd82319444160b57ffdf5ebb118bd"
@@ -186,53 +216,95 @@ DANNY_NOTION_URL = "https://danny8.notion.site/Danny-s-Inventory-List-214fd82319
 BROWSER_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Cache-Control": "no-cache",
+    "Accept-Language": "en-US,en;q=0.9", "Cache-Control": "no-cache",
 }
 
-# ----------------- 185+ INDIAN & GLOBAL DRONE BRANDS -----------------
+# 185+ Brands & Technical patterns for Specs extraction
 KNOWN_BRANDS = [
-    "ZeroDrag", "Vimana", "Drakmatter", "Orange", "Bonka", "ProRange",
-    "Garuda", "Quadkart", "Robokits", "Robu", "Drona Aviation", "Skykrafts",
-    "RadioMaster", "SpeedyBee", "T-Motor", "T-Hobby", "Hobbywing", "Holybro",
-    "GEPRC", "Caddx", "CaddxFPV", "Walksnail", "BetaFPV", "Foxeer", "RushFPV",
-    "Flywoo", "iFlight", "HGLRC", "Matek", "MatekSys", "Skyzone", "Emax",
-    "Diatone", "Mamba", "Gemfan", "HQProp", "DJI", "SIYI", "Skydroid",
-    "Herelink", "CubePilot", "HEX", "ProfiCNC", "CUAV", "Tarot", "SunnySky",
-    "CNHL", "Ovonic", "Tattu", "Gens Ace", "GNB", "Gaoneng", "Herewin",
-    "Auline", "Dogcom", "Zeee", "Turnigy", "Zippy", "Infinity", "Lava",
-    "Molicel", "Murata", "Samsung", "Panasonic", "Vapcell", "LG Chem",
-    "ToolkitRC", "ISDT", "HOTA", "SkyRC", "UltraPower", "Sequre", "EV-Peak",
-    "BrotherHobby", "RCINPower", "Scorpion", "Xnova", "MAD Components", "MAD",
-    "JHEMCU", "DarwinFPV", "Happymodel", "AxisFlying", "MicoAir", "Skystars",
-    "Hakrc", "Flycolor", "NeutronRC", "Lumenier", "ImpulseRC", "Armattan",
-    "RekonFPV", "Rekon", "NewBeeDrone", "Sub250", "DeepSpace", "AOS",
-    "Five33", "Botgrinder", "Pyrodrone", "Speedix", "Spedix", "Racerstar",
-    "Readytosky", "DYS", "ZTW", "APD", "Maytech", "Flipsky", "Dualsky", "Cobra",
-    "TBS", "Team BlackSheep", "ImmersionRC", "Radiolink", "Flysky", "FrSky",
-    "Jumper", "Futaba", "Spektrum", "HelloRadioSky", "NamimnoRC", "Bayck",
-    "HDZero", "Divimath", "Orqa", "FatShark", "Fat Shark", "Eachine",
-    "RunCam", "Hawkeye", "Insta360", "GoPro", "PandaRC", "AKK",
-    "TrueRC", "Maple Wireless", "ORT", "Lollipop", "Pagoda", "Cherry",
-    "DALPROP", "Ethix", "APC", "Master Airscrew", "Azure Power", "Avan",
-    "XOAR", "Eolo", "EFT", "JIYI", "Hobbywing XRotor", "Ublox", "u-blox",
-    "Beitian", "BZGNSS", "Benewake", "LightWare", "Slamtec", "RPLIDAR", "mRo",
-    "Ark Electronics", "BotBlox", "Pixhawk", "ArduPilot", "HeeWing", "ATOMRC",
-    "ZOHD", "Sonicmodell", "XUWING", "Finwing", "X-UAV", "XUAV", "Mapbird",
-    "VolantexRC", "Volantex", "FMS", "Freewing", "OMPHOBBY", "Amass", "TowerPro",
-    "JX Servo", "KST", "GDW", "AGFRC", "Hitec", "Savox", "Corona"
+    "ZeroDrag", "Vimana", "Drakmatter", "Orange", "Bonka", "ProRange", "Garuda", "Quadkart", "Robokits", "Robu",
+    "RadioMaster", "SpeedyBee", "T-Motor", "T-Hobby", "Hobbywing", "Holybro", "GEPRC", "Caddx", "CaddxFPV", "Walksnail",
+    "BetaFPV", "Foxeer", "RushFPV", "Flywoo", "iFlight", "HGLRC", "Matek", "MatekSys", "Skyzone", "Emax", "Diatone",
+    "Mamba", "Gemfan", "HQProp", "DJI", "SIYI", "Skydroid", "Herelink", "CubePilot", "HEX", "ProfiCNC", "CUAV", "Tarot",
+    "SunnySky", "CNHL", "Ovonic", "Tattu", "Gens Ace", "GNB", "Gaoneng", "Herewin", "Auline", "Dogcom", "Zeee", "Turnigy",
+    "BrotherHobby", "RCINPower", "Scorpion", "Xnova", "MAD Components", "MAD", "JHEMCU", "DarwinFPV", "Happymodel",
+    "AxisFlying", "MicoAir", "Skystars", "Hakrc", "Flycolor", "NeutronRC", "Lumenier", "ImpulseRC", "Armattan", "RekonFPV",
+    "NewBeeDrone", "Sub250", "DeepSpace", "AOS", "Five33", "Botgrinder", "Pyrodrone", "ZTW", "APD", "Maytech", "Flipsky",
+    "Dualsky", "TBS", "Team BlackSheep", "ImmersionRC", "Radiolink", "Flysky", "FrSky", "Jumper", "Futaba", "Spektrum",
+    "HDZero", "Divimath", "Orqa", "FatShark", "RunCam", "Hawkeye", "Insta360", "GoPro", "TrueRC", "Maple Wireless",
+    "ORT", "DALPROP", "Ethix", "APC", "Master Airscrew", "XOAR", "Eolo", "EFT", "JIYI", "Ublox", "u-blox", "Beitian",
+    "BZGNSS", "Benewake", "LightWare", "Slamtec", "RPLIDAR", "mRo", "Ark Electronics", "Pixhawk", "ArduPilot", "HeeWing",
+    "ATOMRC", "ZOHD", "Sonicmodell", "X-UAV", "Mapbird", "VolantexRC", "FMS", "Freewing", "OMPHOBBY", "Amass", "JX Servo", "KST"
 ]
 
 BRAND_ALIASES = {
     "t-motors": "T-Motor", "tmotor": "T-Motor", "t-hobby": "T-Hobby (T-Motor)",
-    "caddxfpv": "Caddx", "mateksys": "Matek", "gaoneng": "GNB",
-    "team blacksheep": "TBS", "fat shark": "FatShark", "rekon": "RekonFPV",
-    "hex": "CubePilot", "proficnc": "CubePilot", "u-blox": "Ublox",
-    "xuav": "X-UAV", "volantex": "VolantexRC", "mamba": "Diatone Mamba",
+    "caddxfpv": "Caddx", "mateksys": "Matek", "gaoneng": "GNB", "team blacksheep": "TBS",
+    "fat shark": "FatShark", "rekon": "RekonFPV", "hex": "CubePilot", "proficnc": "CubePilot",
 }
 
-# ----------------- AI DRONE BUILD COMPATIBILITY MATRIX -----------------
-# Maps Beginner / Size-Based Queries -> Exact Stators, Model Families & Multi-Query Fan-Out
+# ----------------- BROAD QUERY RESOLUTION ENGINE -----------------
+# Maps extremely broad searches to strict categorised queries
+EXTREMELY_GENERAL_MAP = {
+    "motor": {
+        "patterns": [r"^(?:brushless\s+)?motor[s]?$", r"^bldc(?:[\s\-]+motor)?$", r"^brushless\b$"],
+        "message": "⚠️ Brushless motors range from 0.8g micro toys to giant Agriculture rotors. What FPV / UAV flight tier are you building?",
+        "categories": {
+            "Tiny Whoops (65-75mm)": {"search": "0802 motor", "subtext": "Stator 0702 / 0802 / 1002 (e.g. HappyModel, BetaFPV WHOOP)"},
+            "2\" - 2.5\" Cinematic / Micros": {"search": "1404 motor", "subtext": "Stator 1404 / 1204 / 1303 (e.g. AxisFlying, CineWhoop)"},
+            "3\" - 3.5\" Micro-Freestyle": {"search": "2004 motor", "subtext": "Stator 1507 / 1804 / 2004 (e.g. T-Motor, SpeedyBee)"},
+            "5\" Freestyle & Racing Standard": {"search": "2207 motor 1950KV", "subtext": "Stator 2207 / 2306 4S-6S (e.g. XING2, Eco II)"},
+            "7\" - 10\" Long Range / Heavy": {"search": "2807 motor", "subtext": "Stator 2806.5 / 2807 / 3115 (e.g. BrotherHobby, EM2807)"},
+            "Industrial & Agriculture UAV": {"search": "8120 motor", "subtext": "Stator 6008 / 8120 heavy payload (e.g. Hobbywing, T-Motor U8)"}
+        }
+    },
+    "frame": {
+        "patterns": [r"^frame[s]?$", r"^drone\s+frame[s]?$", r"^chassis\b$"],
+        "message": "⚠️ Quadcopter frames are defined by prop-clearance and layout. What size standard are you searching?",
+        "categories": {
+            "Tiny Whoop Micro Frame": {"search": "65mm whoop frame", "subtext": "65mm / 75mm flexible plastic frames (Meteor, Mobula)"},
+            "2.5\" CineWhoop Frame": {"search": "2.5 inch frame", "subtext": "2.5\" Prop clear with protective ducts (Bee25, Pavo25)"},
+            "3\" to 3.5\" Cine/Micro Frame": {"search": "3.5 inch frame", "subtext": "Pavo35, CineLog35, Volador 3.5\" lightweight frames"},
+            "5\" Standard FPV Freestyle": {"search": "5 inch frame Mark5", "subtext": "Mark5, Apex, TBS Source One V5 carbon-fiber frames"},
+            "7\" - 10\" Long Range Frame": {"search": "7 inch frame Mark4", "subtext": "7\" to 10\" extended-arm cruiser frames (Chimera7)"},
+            "Agritech & Mapping Chassis": {"search": "E616P frame", "subtext": "Heavy-lift quad or hex Agritech platforms (E410P, Tarot)"}
+        }
+    },
+    "fc": {
+        "patterns": [r"^(?:flight\s+)?controller[s]?$", r"^fc\b$", r"^autopilot\b$"],
+        "message": "⚠️ Flight controllers span microscopic whoops up to industrial autonomous units. Pick an application:",
+        "categories": {
+            "Tiny Whoop Flight Controller": {"search": "F4 1S AIO flight controller", "subtext": "AIO boards with built-in SPI Rx and Esc (F4 1S AIO)"},
+            "Toothpick / Micro AIO FC": {"search": "F405 AIO 40A", "subtext": "F405/F722 AIO single-board with built-in 20A-40A ESCs"},
+            "Standard FPV 30x30 / 20x20 FC": {"search": "F405 Flight Controller", "subtext": "F405, F722 & H743 stack controllers with sensor integration"},
+            "Autonomous Autopilots": {"search": "Pixhawk 6C autopilot", "subtext": "Mission-capable autonomous setups (Pixhawk, Cube Orange)"},
+            "Agriculture UAV Flight Controller": {"search": "JIYI K++ flight controller", "subtext": "Dedicated mapping/spraying computers (JIYI K++, EFT V9)"}
+        }
+    },
+    "propeller": {
+        "patterns": [r"^propeller[s]?$", r"^prop[s]?$", r"^blade[s]?$"],
+        "message": "⚠️ Drone propellers are size, pitch and mounting specific. What blade scale are you selecting?",
+        "categories": {
+            "Micro / Whoop Blades": {"search": "31mm whoop props", "subtext": "31mm / 40mm / 2\" push-on propellers"},
+            "2.5\" CineWhoop Propellers": {"search": "gemfan D63 propellers", "subtext": "Gemfan D63, 2512 micro-pitch ducted tri-blades"},
+            "3\" - 3.5\" Propellers": {"search": "3520 propellers", "subtext": "3016, 3020, 3520 multi-blade patterns (Gemfan)"},
+            "5\" Freestyle & Racing Standard": {"search": "51433 propellers", "subtext": "5\" high-efficiency FPV tri-blades (e.g. HQProp, 51466)"},
+            "7\" - 10\" Long Range Props": {"search": "7040 propellers", "subtext": "Large 7\", 8\", 10\" flex and carbon patterns (Dalprop)"},
+            "Agri / Industrial Carbon Props": {"search": "3010 carbon propellers", "subtext": "Large-diameter single-bolt carbon or nylon (e.g. 3010, T-Motor)"}
+        }
+    },
+    "battery": {
+        "patterns": [r"^battery$", r"^batteries$", r"^lipo$", r"^power\s*pack$"],
+        "message": "⚠️ Drone batteries must match build current and voltage (S-rating). Choose the target size:",
+        "categories": {
+            "Tiny Whoop 1S Battery": {"search": "1S 450mah lipo", "subtext": "Single cell PH2.0 or BT2.0 packs for 65mm-75mm tiny whoops"},
+            "Cinewhoop / Toothpick Battery": {"search": "4S 850mah lipo", "subtext": "Small 3S-4S high discharge packs (Tattu, CNHL)"},
+            "Standard FPV 5\" Freestyle": {"search": "6S 1300mah lipo", "subtext": "Heavy duty high-C 6S FPV flight packs (Tattu, CNHL)"},
+            "7\" Long Range Cruise": {"search": "6S 3300mah lipo", "subtext": "Large high-capacity 6S cruising LiPo or Li-Ion (Molicel)"},
+            "Mapping & Survey UAV Battery": {"search": "6S 22000mah battery", "subtext": "Heavy-lift solid state or high-capacity powerpacks (Herewin)"}
+        }
+    }
+}
+
 DRONE_SIZE_COMPATIBILITY = {
     "tinywhoop": {
         "size_patterns": [r"\b65\s*mm\b", r"\b75\s*mm\b", r"\btiny\s*whoop\b", r"\b1\.2\s*(?:inch|\")\b", r"\b1\.6\s*(?:inch|\")\b"],
@@ -406,7 +478,6 @@ DRONE_SIZE_COMPATIBILITY = {
     }
 }
 
-# ----------------- CATEGORY & EXCLUSION POOLS -----------------
 CATEGORY_RULES = [
     ("Radio Transmitter / Controller", [
         r"\bpocket\b", r"\bboxer\b", r"\btx16s\b", r"\btx12\b", r"\bzorro\b",
@@ -459,9 +530,13 @@ CATEGORY_RULES = [
         r"\bcinelog\b", r"\bpavo\b", r"\bpavo20\b", r"\bpavo25\b", r"\bpavo35\b",
         r"\bcine25\b", r"\bcine35\b", r"\bbee25\b", r"\bct25\b", r"\bapex\b", r"\bevoque\b", r"\bvolador\b"
     ], [
-        "spare arm", "replacement arm", "front arm", "rear arm", "top plate",
-        "bottom plate", "middle plate", "side plate", "tpu", "screw", "standoff",
-        "damper", "canopy", "duct guard", "arms set", "arm set"
+        "spare arm", "replacement arm", "front arm", "rear arm", "arms set", "arm set",
+        "top plate", "bottom plate", "middle plate", "side plate", "bumper", "duct guard",
+        "prop guard", "propeller guard", "landing pad", "landing skid", "landing gear",
+        "o-ring", "grommet", "damper", "damping ball", "anti-vibration", "sponge",
+        "faceplate", "tpu", "3d printed", "3d print", "canopy", "hood", "heatsink",
+        "cooling fan", "wrench", "screwdriver", "tweezers", "soldering mat",
+        "dummy", "practice board", "smoke stopper", "trainer cable", "simulator dongle"
     ]),
     ("Video Transmitter (VTX) / Air Unit", [
         r"\bvtx\b", r"\bvideo transmitter\b", r"\btx800\b", r"\btx1600\b",
@@ -584,13 +659,20 @@ SPEC_PATTERNS = [
     r"\bO3\b|\bO4(?:\s*Pro)?\b|\bAvatar\b|\bWalksnail\b|\bHDZero\b|\bAnalog\b|\bStarlight\b|\b\d{3,4}\s*TVL\b|\b4K\b",
     r"\b30\.5\s*x\s*30\.5\b|\b20\s*x\s*20\b|\b25\.5\s*x\s*25\.5\b",
     r"\bXT30\b|\bXT60\b|\bXT90\b|\bAS150\b|\bSMA\b|\bRP-SMA\b|\bMMCX\b|\bU\.?FL\b|\bLHCP\b|\bRHCP\b",
-    r"\bHall\s*Gimbal\b|\bAG01\b|\bEdgeTX\b|\bCharcoal\b|\bTransparent\b|\bCrush\b"
+    r"\bHall\s*Gimbal\b|\bAG01\b|\bEdgeTX\b"
 ]
 
 # ----------------- STEP 1: AI-ASSISTED HARDWARE ADVISOR & QUERY PLANNER -----------------
 def understand_user_query(raw_query: str, api_key: str = "") -> dict:
     q_clean = re.sub(r"[^a-zA-Z0-9\.\-\"]", " ", raw_query).strip()
     q_lower = q_clean.lower()
+
+    # Find extremadamente-general maps (broad non-technical categories)
+    triage_info = None
+    for term, t_map in EXTREMELY_GENERAL_MAP.items():
+        if any(re.search(pat, q_lower) for pat in t_map["patterns"]):
+            triage_info = t_map
+            break
 
     # 1. Detect Primary Category & Exclusions
     detected_category = "General Drone Component"
@@ -637,13 +719,13 @@ def understand_user_query(raw_query: str, api_key: str = "") -> dict:
         if re.search(r"\blong\s*range\s*(?:rx|receiver)\b", q_lower):
             detected_category = "FPV / RC Receiver (RX)"
             ai_explanation = "Long-Range Telemetry Receivers -> 900MHz / 915MHz ELRS, TBS Crossfire, & Diversity Receivers"
-            search_queries = ["915mhz receiver", "elrs 900 rx", "crossfire nano rx", "superd receiver", "xr2 receiver"]
+            search_queries = ["915mhz receiver", "elrs 900 rx", "crossfire nano rx", "superd receiver"]
             must_type_tokens = ["receiver", "rx", "nano", "superd", "superp", "rp", "xr"]
             any_spec_tokens = ["915", "900", "868", "crossfire", "diversity", "elrs", "expresslrs"]
             is_ai_expanded = True
         elif re.search(r"\bautopilot\b|\bautonomous\s*flight\s*controller\b", q_lower):
             detected_category = "Flight Controller / FC Stack / Autopilot"
-            ai_explanation = "Autonomous UAV / ArduPilot / PX4 Flight Controllers -> Pixhawk, CubePilot Cube Orange, Matek H743, CUAV"
+            ai_explanation = "Autonomous Autopilots -> Pixhawk, Cube Orange, Matek H743, CUAV, JIYI K++"
             search_queries = ["pixhawk", "cube orange", "h743 flight controller", "cuav", "jiyi k++"]
             must_type_tokens = ["pixhawk", "cube", "h743", "cuav", "autopilot", "flight controller", "jiyi"]
             any_spec_tokens = ["pixhawk", "cube", "h743", "f405-wte", "f405-wing", "cuav", "jiyi", "ardupilot"]
@@ -664,15 +746,15 @@ def understand_user_query(raw_query: str, api_key: str = "") -> dict:
             search_queries.append("".join(raw_tokens))
         ai_explanation = f"Direct Component Search ({detected_category})"
 
-    # 5. Optional Gemini AI Planner (for custom natural language queries)
-    if GEMINI_AVAILABLE and api_key:
+    # 5. Gemini AI Planner (Dynamic fallback logic for unmapped queries)
+    if GEMINI_AVAILABLE and api_key and not triage_info:
         try:
             class AIQueryPlan(BaseModel):
                 category: str
                 technical_explanation: str
-                vendor_search_queries: list[str] = Field(description="Up to 6 short 1-3 word technical search queries for Indian drone stores")
-                compatible_model_or_spec_keywords: list[str] = Field(description="Stator sizes, model codes, or spec keywords that match this request")
-                is_conceptual_or_size_query: bool = Field(description="True if user asked a general/size-based question like '5 inch motors' or '2.5 inch frame' rather than a single exact model")
+                vendor_search_queries: list[str] = Field(description="Up to 6 short technical search queries for stores")
+                compatible_model_or_spec_keywords: list[str] = Field(description="Stator sizes, model codes, or spec keywords")
+                is_conceptual_or_size_query: bool
 
             client = genai.Client(api_key=api_key)
             res = client.models.generate_content(
@@ -680,12 +762,7 @@ def understand_user_query(raw_query: str, api_key: str = "") -> dict:
                 contents=f"""
                 You are an expert Indian FPV & UAV drone hardware engineer.
                 User searched for: "{raw_query}"
-
-                If the user searched for a general or size-based need (like "5 inch FPV motors", "2.5 inch frame", "cinematic drone camera", "7 inch props"):
-                - Translate it into exact compatible technical part numbers/stators/models sold on Indian drone sites (e.g. 2207, 2306, 2306.5, 2205 for 5-inch motors; Bee25, Cine25, CT25, C25V2, Pavo25, Cinelog25, Stellar 25, Defender 25 for 2.5-inch frames).
-                - Provide up to 6 short search queries (1 to 3 words each) to run across vendor search bars.
-                If the user searched for a specific model (like "Radiomaster Pocket"):
-                - Keep the search focused on that exact model.
+                Categorize this requirement and expand it to compatible part codes/stators (e.g. 2207 for 5-inch motors) if general or conceptual.
                 """,
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
@@ -706,21 +783,17 @@ def understand_user_query(raw_query: str, api_key: str = "") -> dict:
                 is_ai_expanded = True
                 must_type_tokens = raw_tokens[:1] + [w.lower() for w in plan.get("compatible_model_or_spec_keywords", [])[:6]]
                 any_spec_tokens = [w.lower() for w in plan.get("compatible_model_or_spec_keywords", [])]
-            elif plan.get("compatible_model_or_spec_keywords") and is_ai_expanded:
-                for kw in plan["compatible_model_or_spec_keywords"]:
-                    if kw.lower() not in any_spec_tokens:
-                        any_spec_tokens.append(kw.lower())
         except Exception:
             pass
 
-    # Deduplicate search queries (keep up to 8 for parallel fan-out)
+    # Deduplicate search queries (keep up to 8 for parallel scan)
     dedup_queries = []
     for sq in search_queries:
         if sq.strip() and sq.strip().lower() not in [x.lower() for x in dedup_queries]:
             dedup_queries.append(sq.strip())
     dedup_queries = dedup_queries[:8]
 
-    # Identify Conflicting Sibling Models (only when user searched a specific model)
+    # Sibling verification patterns
     conflicting_tokens = set()
     if not is_ai_expanded:
         q_nospace = q_lower.replace(" ", "")
@@ -732,7 +805,7 @@ def understand_user_query(raw_query: str, api_key: str = "") -> dict:
             if matched_in_group:
                 conflicting_tokens.update(group - matched_in_group)
 
-    # Build Exclusions Pool
+    # Exclusions pool setup
     user_wants_accessory = any(re.search(rf"\b{re.escape(w)}\b", q_lower) for w in GENERAL_ACCESSORY_WORDS)
     active_exclusions = set()
     if not user_wants_accessory:
@@ -748,6 +821,8 @@ def understand_user_query(raw_query: str, api_key: str = "") -> dict:
         "category": detected_category,
         "ai_explanation": ai_explanation,
         "is_ai_expanded": is_ai_expanded,
+        "is_extremely_general": triage_info is not None,
+        "triage_info": triage_info,
         "must_tokens": raw_tokens,
         "must_type_tokens": must_type_tokens,
         "any_spec_tokens": any_spec_tokens,
@@ -765,43 +840,34 @@ def verify_product_matches_intent(title: str, intent: dict, extra_context: str =
     combined_lower = f"{t_lower} {extra_context.lower()} {url.lower()}"
     combined_compact = re.sub(r"[\s\-_]", "", combined_lower)
 
-    # 1. Reject website navigation & generic category headers
     nav_blacklist = {
         "home", "shop", "cart", "view cart", "add to cart", "checkout", "my account",
         "login", "register", "wishlist", "compare", "track order", "contact us",
         "about us", "privacy policy", "terms and conditions", "read more", "search",
-        "frames", "motors", "propellers", "batteries", "flight controllers", "view details"
+        "frames", "motors", "propellers", "view details"
     }
-    if t_lower in nav_blacklist or re.match(r"^\d+(\.\d+)?\"?\s*frames$", t_lower):
+    if t_lower in nav_blacklist:
         return False, 0
 
-    # 2. Reject excluded accessory / spare-part words in the product title
     for exc in intent["exclude_words"]:
         if re.search(rf"\b{re.escape(exc)}\b", t_lower):
             return False, 0
 
     q_lower = intent["raw_query"].lower()
 
-    # 3A. Matching Mode for AI-Expanded Size/Class Queries (e.g., "5 inch FPV motors", "2.5 inch frame")
-    if intent.get("is_ai_expanded"):
-        # Must match at least one Component Type / Model token in the title
+    if intent.get("is_ai_expanded") or intent.get("is_extremely_general"):
+        # Match primary component pattern in title
         type_ok = any(tok in t_lower or re.sub(r"[\s\-_]", "", tok) in t_compact for tok in intent["must_type_tokens"])
         if not type_ok:
             return False, 0
 
-        # Reject spare parts that say "<spare part> for <motor/frame>"
+        # Eliminate general multi-category spares & protectors (TPU cases, screw hardware, replacement shafts)
         if re.search(r"\b(?:bearing|shaft|screw|bell|mount|guard|strap|tpu|arm|plate|canopy)\b.*\bfor\b", t_lower):
             return False, 0
 
-        # Must match at least one Compatible Spec / Stator / Model / Size token in Title, URL, or Description
-        spec_in_title = any(
-            spec in t_lower or re.sub(r"[\s\-_]", "", spec) in t_compact
-            for spec in intent["any_spec_tokens"]
-        )
-        spec_in_context = any(
-            spec in combined_lower or re.sub(r"[\s\-_]", "", spec) in combined_compact
-            for spec in intent["any_spec_tokens"]
-        )
+        # Match any specs/stators on the expanded plan
+        spec_in_title = any(spec in t_lower or re.sub(r"[\s\-_]", "", spec) in t_compact for spec in intent["any_spec_tokens"])
+        spec_in_context = any(spec in combined_lower or re.sub(r"[\s\-_]", "", spec) in combined_compact for spec in intent["any_spec_tokens"])
 
         if not (spec_in_title or spec_in_context):
             return False, 0
@@ -811,13 +877,11 @@ def verify_product_matches_intent(title: str, intent: dict, extra_context: str =
             score += 40
         return True, score
 
-    # 3B. Matching Mode for Specific Model Queries (e.g., "Radiomaster Pocket", "SpeedyBee F405 V4")
-    # Only reject "for <Target>" when the part before "for" is NOT the target component
+    # Sibling boundary checks (blocks parts labeled "A for B" if "A" is not the focus)
     if " for " not in q_lower:
         parts_split = re.split(r"\b(?:for|compatible\s+with|suitable\s+for|fits|replacement\s+for)\b", t_lower, maxsplit=1)
         if len(parts_split) == 2:
             prefix_part, suffix_part = parts_split[0], parts_split[1]
-            # If the user's primary model keyword ONLY appears after "for", it's an accessory FOR that model
             for must_tok in intent["must_tokens"]:
                 if len(must_tok) >= 4 and must_tok in suffix_part and must_tok not in prefix_part:
                     return False, 0
@@ -846,7 +910,7 @@ def verify_product_matches_intent(title: str, intent: dict, extra_context: str =
 
     return True, score
 
-# ----------------- METADATA EXTRACTORS -----------------
+# ----------------- BRAND & SPEC EXTRACTION -----------------
 def detect_brand(title: str, default_brand: str = "") -> str:
     if default_brand and default_brand.lower() not in ["generic", "unknown", "n/a", ""]:
         alias_check = BRAND_ALIASES.get(default_brand.lower().strip())
@@ -886,7 +950,7 @@ def parse_inr_price(text: str) -> float:
             pass
     return 0.0
 
-# ----------------- VENDOR SCRAPING & DEEP DISCOVERY LAYER -----------------
+# ----------------- PARSE / DEEP WEB SCRAPING -----------------
 def parse_markdown_listing(md_text: str, vendor: str, base_url: str, intent: dict) -> list[dict]:
     items = []
     lines = [l.strip() for l in md_text.splitlines() if l.strip()]
@@ -906,7 +970,6 @@ def parse_markdown_listing(md_text: str, vendor: str, base_url: str, intent: dic
             ]):
                 continue
 
-            # Only check the immediate product block (up to next product link) so neighboring 'Sold out' items don't poison this item
             end_idx = min(len(lines), i + 5)
             window_lines = [lines[i]]
             for j in range(i + 1, end_idx):
@@ -915,7 +978,7 @@ def parse_markdown_listing(md_text: str, vendor: str, base_url: str, intent: dic
                 window_lines.append(lines[j])
             window_blob = " \n ".join(window_lines)
 
-            if re.search(r"\bout of stock\b|\bsold out\b|\bcurrently unavailable\b", window_blob, re.I):
+            if re.search(r"\bout of stock\b|\bsold out\b", window_blob, re.I):
                 continue
 
             is_match, score = verify_product_matches_intent(clean_title, intent, window_blob, url)
@@ -944,8 +1007,7 @@ def parse_html_dom(html_text: str, vendor: str, base_url: str, intent: dict) -> 
     soup = BeautifulSoup(html_text, "html.parser")
     cards = soup.select(
         ".product, li.product, .product-grid-item, .type-product, "
-        ".product-item, .product-card, .product-layout, .productListing-odd, .productListing-even, "
-        ".theme-product-box, .zpro-product"
+        ".product-item, .product-card, .product-layout, .productListing-odd, .productListing-even"
     )
 
     for card in cards:
@@ -971,9 +1033,8 @@ def parse_html_dom(html_text: str, vendor: str, base_url: str, intent: dict) -> 
             continue
 
         sku_el = card.select_one(".sku, .product-sku")
-        if sku_el:
-            sku = sku_el.get_text(strip=True).replace("SKU:", "").strip()
-        else:
+        sku = sku_el.get_text(strip=True).replace("SKU:", "").strip() if sku_el else "N/A"
+        if sku == "N/A":
             sku_m = re.search(r"SKU\s*[:#\-]?\s*([A-Za-z0-9_\-]+)", card_text, re.I)
             sku = sku_m.group(1) if sku_m else "N/A"
 
@@ -1009,17 +1070,9 @@ async def fetch_via_jina(session: httpx.AsyncClient, jina_sem: asyncio.Semaphore
     return ""
 
 async def crawl_category_or_collection_url(
-    session: httpx.AsyncClient,
-    jina_sem: asyncio.Semaphore,
-    vendor: str,
-    cat_url: str,
-    base_url: str,
-    intent: dict
+    session: httpx.AsyncClient, jina_sem: asyncio.Semaphore,
+    vendor: str, cat_url: str, base_url: str, intent: dict
 ) -> list[dict]:
-    """
-    When search discovers a category/collection page (like quadkart.in/product-category/drone-frame/2-5-frames/
-    or uavmarketplace.in/collections/fpv-hobby-frames/...), crawls the products inside that page.
-    """
     extracted = []
     try:
         resp = await session.get(cat_url, headers=BROWSER_HEADERS, timeout=9.0)
@@ -1027,28 +1080,16 @@ async def crawl_category_or_collection_url(
             extracted.extend(parse_html_dom(resp.text, vendor, base_url, intent))
     except Exception:
         pass
-
     if not extracted:
         md_text = await fetch_via_jina(session, jina_sem, cat_url)
         if md_text:
             extracted.extend(parse_markdown_listing(md_text, vendor, base_url, intent))
-
     return extracted
 
 async def fetch_multi_engine_web_index(
-    session: httpx.AsyncClient,
-    search_sem: asyncio.Semaphore,
-    jina_sem: asyncio.Semaphore,
-    vendor: str,
-    domain: str,
-    base_url: str,
-    intent: dict
+    session: httpx.AsyncClient, search_sem: asyncio.Semaphore, jina_sem: asyncio.Semaphore,
+    vendor: str, domain: str, base_url: str, intent: dict
 ) -> list[dict]:
-    """
-    Searches Yahoo India Search + DuckDuckGo Lite for `site:<domain>` so products whose
-    description mentions the size/spec (like '2.5 inch props' on AOS Cine25 or GEPRC CT25)
-    are discovered just like on Google. Also follows discovered category pages.
-    """
     items = []
     category_urls_to_follow = set()
     queries_to_run = [intent["raw_query"]]
@@ -1060,7 +1101,7 @@ async def fetch_multi_engine_web_index(
         for q_str in queries_to_run[:2]:
             site_q = f"site:{domain} {q_str}"
 
-            # Engine 1: Yahoo India Search HTML (Fast, Bing-backed, no Cloudflare 403)
+            # Engine 1: Yahoo India (Quick fallback without botwalls)
             y_url = f"https://in.search.yahoo.com/search?p={quote_plus(site_q)}&n=15"
             try:
                 resp = await session.get(y_url, headers=BROWSER_HEADERS, timeout=9.0)
@@ -1079,7 +1120,6 @@ async def fetch_multi_engine_web_index(
                         if domain not in href.lower():
                             continue
 
-                        # If it's a category/collection page, queue it for crawling!
                         if any(c_pat in href.lower() for c_pat in ["/product-category/", "/collections/", "/category/"]):
                             category_urls_to_follow.add(href)
                             continue
@@ -1093,108 +1133,35 @@ async def fetch_multi_engine_web_index(
                         )[0].strip()
 
                         snippet = snip_el.get_text(" ", strip=True) if snip_el else ""
-                        combined_blob = f"{clean_title} {snippet}"
-
-                        if re.search(r"\bout of stock\b|\bsold out\b", combined_blob, re.I):
+                        if re.search(r"\bout of stock\b|\bsold out\b", f"{clean_title} {snippet}", re.I):
                             continue
 
                         is_match, score = verify_product_matches_intent(clean_title, intent, snippet, href)
                         if not is_match:
                             continue
 
-                        sku_m = re.search(r"SKU\s*[:#\-]?\s*([A-Za-z0-9_\-]+)", combined_blob, re.I)
-                        sku = sku_m.group(1) if sku_m else "N/A"
-                        price = parse_inr_price(combined_blob)
-
+                        sku_m = re.search(r"SKU\s*[:#\-]?\s*([A-Za-z0-9_\-]+)", f"{clean_title} {snippet}", re.I)
                         items.append({
-                            "product_name": clean_title,
-                            "specification": extract_specs_from_title(clean_title, snippet),
-                            "brand_name": detect_brand(clean_title),
-                            "vendor_name": vendor,
-                            "sku_name": sku,
-                            "rate": price,
-                            "in_stock": True,
-                            "link": href,
-                            "relevance": score
+                            "product_name": clean_title, "specification": extract_specs_from_title(clean_title, snippet),
+                            "brand_name": detect_brand(clean_title), "vendor_name": vendor, "sku_name": sku_m.group(1) if sku_m else "N/A",
+                            "rate": parse_inr_price(f"{clean_title} {snippet}"), "in_stock": True, "link": href, "relevance": score
                         })
             except Exception:
                 pass
 
-            # Engine 2: DuckDuckGo HTML fallback if Yahoo returned 0 items
-            if not items and not category_urls_to_follow:
-                ddg_url = f"https://html.duckduckgo.com/html/?q={quote_plus(site_q)}"
-                try:
-                    resp = await session.get(ddg_url, headers=BROWSER_HEADERS, timeout=9.0)
-                    if resp.status_code == 200:
-                        soup = BeautifulSoup(resp.text, "html.parser")
-                        for res in soup.select(".result"):
-                            a_el = res.select_one(".result__a")
-                            snip_el = res.select_one(".result__snippet")
-                            if not a_el:
-                                continue
-                            raw_title = a_el.get_text(" ", strip=True)
-                            href = a_el.get("href", "")
-                            if "uddg=" in href:
-                                href = unquote(href.split("uddg=")[1].split("&")[0])
-
-                            if any(c_pat in href.lower() for c_pat in ["/product-category/", "/collections/", "/category/"]):
-                                category_urls_to_follow.add(href)
-                                continue
-
-                            if any(skip in href.lower() for skip in ["/tag/", "/blog/", "/brand/"]):
-                                continue
-
-                            clean_title = re.split(
-                                r"\s+[\-\|–]\s+(?:Buy|Robu|Zbotic|Quadkart|Design Info|Indian Robo|Robokits|Xrobo|Tujo|Anubis|FPV|Hi Tech|UAV)",
-                                raw_title, flags=re.I
-                            )[0].strip()
-
-                            snippet = snip_el.get_text(" ", strip=True) if snip_el else ""
-                            combined_blob = f"{clean_title} {snippet}"
-
-                            if re.search(r"\bout of stock\b|\bsold out\b", combined_blob, re.I):
-                                continue
-
-                            is_match, score = verify_product_matches_intent(clean_title, intent, snippet, href)
-                            if not is_match:
-                                continue
-
-                            sku_m = re.search(r"SKU\s*[:#\-]?\s*([A-Za-z0-9_\-]+)", combined_blob, re.I)
-                            sku = sku_m.group(1) if sku_m else "N/A"
-                            price = parse_inr_price(combined_blob)
-
-                            items.append({
-                                "product_name": clean_title,
-                                "specification": extract_specs_from_title(clean_title, snippet),
-                                "brand_name": detect_brand(clean_title),
-                                "vendor_name": vendor,
-                                "sku_name": sku,
-                                "rate": price,
-                                "in_stock": True,
-                                "link": href,
-                                "relevance": score
-                            })
-                except Exception:
-                    pass
-
-    # Follow up to 2 discovered category/collection pages for this vendor
     for cat_url in list(category_urls_to_follow)[:2]:
         items.extend(await crawl_category_or_collection_url(session, jina_sem, vendor, cat_url, base_url, intent))
 
     return items
 
 async def scrape_woocommerce_vendor(
-    session: httpx.AsyncClient,
-    search_sem: asyncio.Semaphore,
-    jina_sem: asyncio.Semaphore,
-    vendor: str,
-    base_url: str,
-    intent: dict
+    session: httpx.AsyncClient, search_sem: asyncio.Semaphore, jina_sem: asyncio.Semaphore,
+    vendor: str, base_url: str, intent: dict
 ) -> list[dict]:
     found_items = []
     queries = intent["search_queries"]
 
-    # Layer 1: Parallel Multi-Query Fan-Out on WooCommerce Store JSON API (All expanded queries!)
+    # Layer 1: WooCommerce JSON API batches
     async def fetch_wc_api_single(q: str) -> list[dict]:
         q_items = []
         api_url = f"{base_url}/wp-json/wc/store/v1/products?search={quote_plus(q)}&per_page=25"
@@ -1215,30 +1182,24 @@ async def scrape_woocommerce_vendor(
                         prices = item.get("prices", {})
                         raw_price = prices.get("price", "0")
                         minor_unit = prices.get("currency_minor_unit", 2)
-                        price_val = float(raw_price) / (10 ** minor_unit) if raw_price else 0.0
                         q_items.append({
-                            "product_name": title,
-                            "specification": extract_specs_from_title(title, short_desc),
-                            "brand_name": detect_brand(title),
-                            "vendor_name": vendor,
-                            "sku_name": item.get("sku") or "N/A",
-                            "rate": price_val,
-                            "in_stock": True,
-                            "link": permalink,
-                            "relevance": score
+                            "product_name": title, "specification": extract_specs_from_title(title, short_desc),
+                            "brand_name": detect_brand(title), "vendor_name": vendor, "sku_name": item.get("sku") or "N/A",
+                            "rate": float(raw_price) / (10 ** minor_unit) if raw_price else 0.0, "in_stock": True,
+                            "link": permalink, "relevance": score
                         })
         except Exception:
             pass
         return q_items
 
-    wc_batches = await asyncio.gather(*(fetch_wc_api_single(q) for q in queries[:8]), return_exceptions=True)
+    wc_batches = await asyncio.gather(*(fetch_wc_api_single(q) for q in queries[:6]), return_exceptions=True)
     for b in wc_batches:
         if isinstance(b, list):
             found_items.extend(b)
 
-    # Layer 2: Direct HTML DOM Search if Store REST API is disabled or blocked
-    if len(found_items) < 3:
-        for q in queries[:3]:
+    # Fallbacks: DOM & Web Search indexing
+    if len(found_items) < 2:
+        for q in queries[:2]:
             search_url = f"{base_url}/?s={quote_plus(q)}&post_type=product"
             try:
                 resp = await session.get(search_url, timeout=9.0)
@@ -1247,16 +1208,7 @@ async def scrape_woocommerce_vendor(
             except Exception:
                 pass
 
-    # Layer 3: Jina Reader Proxy (for Cloudflare-protected stores like Robu & Zbotic)
-    if len(found_items) < 2:
-        for q in queries[:2]:
-            search_url = f"{base_url}/?s={quote_plus(q)}&post_type=product"
-            md_text = await fetch_via_jina(session, jina_sem, search_url)
-            if md_text:
-                found_items.extend(parse_markdown_listing(md_text, vendor, base_url, intent))
-
-    # Layer 4: Multi-Engine Web Index + Category Crawler
-    if (intent.get("is_ai_expanded") or len(found_items) < 4) and vendor in VENDOR_DOMAINS:
+    if (intent.get("is_ai_expanded") or intent.get("is_extremely_general") or len(found_items) < 3) and vendor in VENDOR_DOMAINS:
         found_items.extend(await fetch_multi_engine_web_index(
             session, search_sem, jina_sem, vendor, VENDOR_DOMAINS[vendor], base_url, intent
         ))
@@ -1264,12 +1216,8 @@ async def scrape_woocommerce_vendor(
     return found_items
 
 async def scrape_shopify_vendor(
-    session: httpx.AsyncClient,
-    search_sem: asyncio.Semaphore,
-    jina_sem: asyncio.Semaphore,
-    vendor: str,
-    base_url: str,
-    intent: dict
+    session: httpx.AsyncClient, search_sem: asyncio.Semaphore, jina_sem: asyncio.Semaphore,
+    vendor: str, base_url: str, intent: dict
 ) -> list[dict]:
     found_items = []
     queries = intent["search_queries"]
@@ -1293,32 +1241,20 @@ async def scrape_shopify_vendor(
                         continue
                     sku = p.get("variants", [{}])[0].get("sku") if p.get("variants") else "N/A"
                     q_items.append({
-                        "product_name": title,
-                        "specification": extract_specs_from_title(title, body_text),
-                        "brand_name": detect_brand(title, p.get("vendor", "")),
-                        "vendor_name": vendor,
-                        "sku_name": sku if sku else "N/A",
-                        "rate": float(p.get("price", 0)),
-                        "in_stock": True,
-                        "link": prod_url,
-                        "relevance": score
+                        "product_name": title, "specification": extract_specs_from_title(title, body_text),
+                        "brand_name": detect_brand(title, p.get("vendor", "")), "vendor_name": vendor, "sku_name": sku if sku else "N/A",
+                        "rate": float(p.get("price", 0)), "in_stock": True, "link": prod_url, "relevance": score
                     })
         except Exception:
             pass
         return q_items
 
-    sh_batches = await asyncio.gather(*(fetch_shopify_single(q) for q in queries[:6]), return_exceptions=True)
+    sh_batches = await asyncio.gather(*(fetch_shopify_single(q) for q in queries[:5]), return_exceptions=True)
     for b in sh_batches:
         if isinstance(b, list):
             found_items.extend(b)
 
-    if not found_items:
-        search_url = f"{base_url}/search?q={quote_plus(queries[0])}"
-        md_text = await fetch_via_jina(session, jina_sem, search_url)
-        if md_text:
-            found_items.extend(parse_markdown_listing(md_text, vendor, base_url, intent))
-
-    if (intent.get("is_ai_expanded") or len(found_items) < 3) and vendor in VENDOR_DOMAINS:
+    if (intent.get("is_ai_expanded") or intent.get("is_extremely_general") or len(found_items) < 3) and vendor in VENDOR_DOMAINS:
         found_items.extend(await fetch_multi_engine_web_index(
             session, search_sem, jina_sem, vendor, VENDOR_DOMAINS[vendor], base_url, intent
         ))
@@ -1326,12 +1262,8 @@ async def scrape_shopify_vendor(
     return found_items
 
 async def scrape_custom_or_notion_vendor(
-    session: httpx.AsyncClient,
-    search_sem: asyncio.Semaphore,
-    jina_sem: asyncio.Semaphore,
-    vendor: str,
-    search_prefix: str,
-    intent: dict
+    session: httpx.AsyncClient, search_sem: asyncio.Semaphore, jina_sem: asyncio.Semaphore,
+    vendor: str, search_prefix: str, intent: dict
 ) -> list[dict]:
     found_items = []
     queries = intent["search_queries"] if vendor != "Danny’s Inventory List" else [""]
@@ -1352,7 +1284,7 @@ async def scrape_custom_or_notion_vendor(
             if md_text:
                 found_items.extend(parse_markdown_listing(md_text, vendor, base_domain_url, intent))
 
-    if (intent.get("is_ai_expanded") or len(found_items) < 3) and vendor in VENDOR_DOMAINS:
+    if (intent.get("is_ai_expanded") or intent.get("is_extremely_general") or len(found_items) < 2) and vendor in VENDOR_DOMAINS:
         found_items.extend(await fetch_multi_engine_web_index(
             session, search_sem, jina_sem, vendor, VENDOR_DOMAINS[vendor], base_domain_url, intent
         ))
@@ -1386,7 +1318,6 @@ async def run_all_scrapers(intent: dict, selected_vendors: list[str]) -> list[di
             if isinstance(res, list):
                 all_items.extend(res)
 
-    # Deduplicate by normalized link & prefer entries with price > 0 and valid SKU
     by_link = {}
     for item in all_items:
         clean_link = item["link"].split("?")[0].rstrip("/").lower()
@@ -1400,7 +1331,7 @@ async def run_all_scrapers(intent: dict, selected_vendors: list[str]) -> list[di
 
     return list(by_link.values())
 
-# ----------------- ZERO-DEPENDENCY EXCEL (.XLSX) GENERATOR -----------------
+# ----------------- EXPORT TO XLSX (.XLSX) -----------------
 def dataframe_to_xlsx_bytes(df: pd.DataFrame) -> bytes:
     buffer = io.BytesIO()
     try:
@@ -1472,7 +1403,7 @@ def dataframe_to_xlsx_bytes(df: pd.DataFrame) -> bytes:
 
     return buffer.getvalue()
 
-# ----------------- SESSION STATE INITIALIZATION -----------------
+# ----------------- SESSION STATE -----------------
 if "boq_cart" not in st.session_state:
     st.session_state.boq_cart = []
 if "search_results" not in st.session_state:
@@ -1482,69 +1413,96 @@ if "last_intent" not in st.session_state:
 
 # ----------------- SIDEBAR SETTINGS -----------------
 with st.sidebar:
-    st.markdown("### ⚙️ Settings")
+    st.markdown("### ⚙️ Search Configuration")
     api_key = st.text_input(
         "Gemini API Key (Optional)",
         value=st.secrets.get("GEMINI_API_KEY", "") if "GEMINI_API_KEY" in st.secrets else "",
         type="password",
-        help="Optional: Enhances AI query translation for custom beginner questions."
     )
-    all_vendor_names = (
-        list(WOOCOMMERCE_VENDORS.keys())
-        + list(SHOPIFY_VENDORS.keys())
-        + list(CUSTOM_VENDORS.keys())
-        + ["Danny’s Inventory List"]
-    )
-    selected_vendors = st.multiselect(
-        "Active Vendors (13)",
-        options=all_vendor_names,
-        default=all_vendor_names
-    )
-    hide_zero_price = st.checkbox("Hide items without listed price", value=False)
+    all_vendor_names = list(WOOCOMMERCE_VENDORS.keys()) + list(SHOPIFY_VENDORS.keys()) + list(CUSTOM_VENDORS.keys()) + ["Danny’s Inventory List"]
+    selected_vendors = st.multiselect("Stores to search", options=all_vendor_names, default=all_vendor_names)
+    hide_zero_price = st.checkbox("Hide items without prices", value=False)
 
-# ----------------- MINIMALIST HEADER -----------------
-st.markdown("""
-<div class="app-header">
-    <div class="app-title">The Drone Builder — AI-Assisted Vendor Search & BOQ Builder</div>
-    <p class="app-subtitle">Innovating the part selection process</p>
-</div>
-""", unsafe_allow_html=True)
+# ----------------- EMBED BRAND LOGO & AP-TITLES -----------------
+# Dynamically display brand logo directly above the interactive app frame
+logo_col, title_col = st.columns([1.2, 4.2])
+with logo_col:
+    if os.path.exists("image_5.png"):
+        st.image("image_5.png", use_container_width=True)
+    else:
+        st.write("🛠️ Logo Area")
+with title_col:
+    st.markdown("""
+    <div style="padding-top: 15px;">
+        <div class="app-title">The Drone Builder</div>
+        <p style="font-size:1.12rem; font-weight:600; color:#1E3A8A; margin: 0 0 4px 0;">AI-Assisted Vendor Search & BOQ Builder</p>
+        <p class="app-subtitle">Innovating the part selection process across 13 Indian drone stores</p>
+    </div>
+    """, unsafe_allow_html=True)
 
-# ----------------- SINGLE SEARCH BAR -----------------
+# ----------------- DIRECT SEARCH INPUT -----------------
 search_col, btn_col = st.columns([5, 1.2])
 with search_col:
     query_input = st.text_input(
-        "Search Drone Component or Build Need",
-        placeholder="Type a part name or general requirement (e.g., 5 inch FPV motors, 2.5 inch frame, SpeedyBee F405 V4)...",
+        "Search drone component (broad requirement or spec model)",
+        placeholder="Try '5 inch FPV motors', 'SpeedyBee F405 V4 Stack' or simply 'brushless motor'...",
         label_visibility="collapsed"
     )
 with btn_col:
     run_search = st.button("🔍 Search Vendors", type="primary", use_container_width=True)
 
-# ----------------- STEP 1 + 2 EXECUTION -----------------
+# Process visual intent first (Pre-Screening Broad Triage Cases)
+pre_screen_intent = None
+if query_input.strip() and not run_search:
+    pre_screen_intent = understand_user_query(query_input.strip(), api_key)
+
+# ----------------- DYNAMIC TRIAGE BOARD FOR EXTREMELY GENERAL SEARCHES -----------------
+if pre_screen_intent and pre_screen_intent.get("is_extremely_general"):
+    triage = pre_screen_intent["triage_info"]
+    st.markdown(f"""
+    <div class="triage-card">
+        <div class="triage-title">🎯 Triage Assistant: Specify Your Drone Application Class</div>
+        <p>{triage['message']}</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Let users instantly Drill-down into precise technical ranges with a single click
+    triage_cols = st.columns(3)
+    idx = 0
+    for label, payload in triage["categories"].items():
+        with triage_cols[idx % 3]:
+            # Simple click cards that directly inject into inputs & rerun
+            if st.button(f"🎯 {label}\n({payload['subtext']})", use_container_width=True, key=f"triage_btn_{idx}"):
+                query_input = payload["search"]
+                run_search = True
+                st.rerun()
+        idx += 1
+
+# Execute search
 if run_search:
     if not query_input.strip():
-        st.warning("Please enter a component name or build requirement to search.")
+        st.warning("Please enter a component or drone requirement.")
     else:
-        with st.spinner(f"AI Advisor translating '{query_input.strip()}' & scanning {len(selected_vendors)} vendors in parallel..."):
+        with st.spinner(f"Classifying '{query_input.strip()}' parameters & initiating deep search across {len(selected_vendors)} vendor database indexes..."):
             intent_info = understand_user_query(query_input.strip(), api_key)
             matched_items = asyncio.run(run_all_scrapers(intent_info, selected_vendors))
             st.session_state.last_intent = intent_info
             st.session_state.search_results = matched_items
 
-# ----------------- DISPLAY AI HARDWARE ADVISOR TRANSLATION -----------------
+# Display Advisor translation
 if st.session_state.last_intent:
     intent = st.session_state.last_intent
-    queries_badges = "".join([f'<span class="ai-badge">🔎 {q}</span>' for q in intent["search_queries"]])
-    st.markdown(f"""
-    <div class="ai-advisor-card">
-        <div>🤖 <b>AI Hardware Advisor:</b> {intent['ai_explanation']}</div>
-        <div style="margin-top:6px; color:#475569;">
-            <b>Detected Category:</b> <span class="ai-badge">{intent['category']}</span>
-            <b>Parallel Technical Queries Sent to Vendors:</b> {queries_badges}
+    if not intent.get("is_extremely_general"):
+        queries_badges = "".join([f'<span class="ai-badge">🔎 {q}</span>' for q in intent["search_queries"]])
+        st.markdown(f"""
+        <div class="ai-advisor-card">
+            <div>🤖 <b>AI Technical Matcher:</b> {intent['ai_explanation']}</div>
+            <div style="margin-top:6px; color:#475569;">
+                <b>Identified Group:</b> <span class="ai-badge">{intent['category']}</span>
+                <b>Parallel Scrapes Dispatched:</b> {queries_badges}
+            </div>
         </div>
-    </div>
-    """, unsafe_allow_html=True)
+        """, unsafe_allow_html=True)
 
 # ----------------- SEARCH RESULTS & ADD TO BOQ -----------------
 results = st.session_state.search_results
@@ -1574,85 +1532,77 @@ if results:
         active_store_count = df_res["vendor_name"].nunique()
 
         st.markdown('<div class="section-card">', unsafe_allow_html=True)
-        st.markdown('<div class="section-title">1. Search Results (Sorted: Low to High Cost)</div>', unsafe_allow_html=True)
-        st.markdown('<div class="section-note">Tick the <b>Select</b> checkbox on any row below and click <b>Add Selected Item(s) to BOQ</b> to add it to your Bill of Quantities.</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-title">1. Product Search Findings (Low to High Rate Index)</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-note">Check the box for compatible parts, customize categorized tier labels below, and press <b>Add to BOQ</b>.</div>', unsafe_allow_html=True)
 
         st.markdown(f"""
         <div class="summary-strip">
-            <div class="summary-pill">Matching Products: <b>{len(df_editor)}</b></div>
-            <div class="summary-pill">Vendors with Stock: <b>{active_store_count}</b></div>
-            <div class="summary-pill">Lowest Rate: <b>{lowest_str}</b></div>
+            <div class="summary-pill">Stock Results Found: <b>{len(df_editor)}</b></div>
+            <div class="summary-pill">Fulfilling Stores: <b>{active_store_count}</b></div>
+            <div class="summary-pill">Target Entry Rate: <b>{lowest_str}</b></div>
         </div>
         """, unsafe_allow_html=True)
 
         edited_df = st.data_editor(
             df_editor,
             column_config={
-                "Select": st.column_config.CheckboxColumn("Select", help="Tick to add this product to BOQ", default=False, width="small"),
+                "Select": st.column_config.CheckboxColumn("Select", help="Add this specification", default=False, width="small"),
                 "Product Name": st.column_config.TextColumn("Product Name", width="large", disabled=True),
                 "Specification": st.column_config.TextColumn("Specification", width="medium", disabled=True),
-                "Brand Name": st.column_config.TextColumn("Brand Name", width="small", disabled=True),
-                "Vendor Name": st.column_config.TextColumn("Vendor Name", width="small", disabled=True),
+                "Brand Name": st.column_config.TextColumn("Brand", width="small", disabled=True),
+                "Vendor Name": st.column_config.TextColumn("Vendor", width="small", disabled=True),
                 "SKU Name": st.column_config.TextColumn("SKU Name", width="small", disabled=True),
                 "Rate (₹)": st.column_config.NumberColumn("Rate (₹)", format="₹%.2f", disabled=True),
-                "Link": st.column_config.LinkColumn("Link", display_text="Open Link ↗", disabled=True),
+                "Link": st.column_config.LinkColumn("Link", display_text="Source URL ↗", disabled=True),
             },
             use_container_width=True,
             hide_index=True,
             key="search_results_editor"
         )
 
-        act_col1, act_col2 = st.columns([2, 3])
-        default_cat = st.session_state.last_intent["category"] if st.session_state.last_intent else "Drone Component"
+        act_col1, act_col2 = st.columns([2.2, 3])
+        default_cat = st.session_state.last_intent["category"] if st.session_state.last_intent else "Drone Part"
         with act_col1:
-            custom_cat = st.text_input(
-                "Category for Selected Item(s)",
-                value=default_cat,
-                help="Auto-filled from your search intent. You can edit this before adding to BOQ."
-            )
+            custom_cat = st.text_input("Group/Category Tag for Selected Parts", value=default_cat)
         with act_col2:
             st.write("")
             st.write("")
             if st.button("➕ Add Selected Item(s) to BOQ", type="primary"):
                 selected_rows = edited_df[edited_df["Select"] == True]
                 if selected_rows.empty:
-                    st.warning("Please tick at least one item's 'Select' checkbox in the table above first.")
+                    st.warning("Please toggle 'Select' checkboxes on compatible matches first.")
                 else:
-                    added_count = 0
+                    added = 0
                     for _, row in selected_rows.iterrows():
                         st.session_state.boq_cart.append({
-                            "Category": custom_cat.strip() or default_cat,
-                            "Item Name": row["Product Name"],
-                            "Rate": float(row["Rate (₹)"]),
-                            "Vendor": row["Vendor Name"],
-                            "SKU": row["SKU Name"],
-                            "Link": row["Link"],
+                            "Category": custom_cat.strip() or default_cat, "Item Name": row["Product Name"],
+                            "Rate": float(row["Rate (₹)"]), "Vendor": row["Vendor Name"], "SKU": row["SKU Name"], "Link": row["Link"],
                         })
-                        added_count += 1
-                    st.success(f"Added {added_count} item(s) to your BOQ table below! You can now search for your next component.")
+                        added += 1
+                    st.success(f"Ported {added} specs to BOQ summary card below. Continue query build tier.")
                     st.rerun()
 
         st.markdown('</div>', unsafe_allow_html=True)
 elif st.session_state.last_intent is not None:
-    st.info("No exact in-stock matches found for this query across the selected vendors. Try a broader term.")
+    st.info("No exact in-stock component results match this query criteria. Refine specs or choose triage classes.")
 
-# ----------------- PERSISTENT BOQ (BILL OF QUANTITIES) SECTION -----------------
+# ----------------- BILL OF QUANTITIES (BOQ) Summary Card -----------------
 st.markdown('<div class="section-card">', unsafe_allow_html=True)
-st.markdown('<div class="section-title">2. Bill of Quantities (BOQ) Cart</div>', unsafe_allow_html=True)
-st.markdown('<div class="section-note">Items added across all your searches appear here. You can edit categories directly, remove unwanted rows, or export the table to Excel (.xlsx).</div>', unsafe_allow_html=True)
+st.markdown('<div class="section-title">2. Build Bill of Quantities (BOQ) summary Card</div>', unsafe_allow_html=True)
+st.markdown('<div class="section-note">Add multi-tier specs across all sub-queries here. Edit pricing & tags on check, delete unneeded entries, and output results.</div>', unsafe_allow_html=True)
 
 if st.session_state.boq_cart:
     boq_df = pd.DataFrame(st.session_state.boq_cart)
     boq_df.insert(0, "Sr. No.", range(1, len(boq_df) + 1))
     boq_df["Remove"] = False
 
-    total_boq_cost = boq_df["Rate"].sum()
+    total_cost = boq_df["Rate"].sum()
 
     st.markdown(f"""
     <div class="summary-strip">
-        <div class="summary-pill">Total BOQ Line Items: <b>{len(boq_df)}</b></div>
-        <div class="summary-pill">Unique Vendors: <b>{boq_df['Vendor'].nunique()}</b></div>
-        <div class="summary-pill">Estimated Total BOQ Value: <b>₹{total_boq_cost:,.2f}</b></div>
+        <div class="summary-pill">Total Bill items: <b>{len(boq_df)}</b></div>
+        <div class="summary-pill">Integrated Vendors: <b>{boq_df['Vendor'].nunique()}</b></div>
+        <div class="summary-pill">Projected Build Cost: <b>₹{total_cost:,.2f}</b></div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -1660,47 +1610,42 @@ if st.session_state.boq_cart:
         boq_df,
         column_config={
             "Sr. No.": st.column_config.NumberColumn("Sr. No.", width="small", disabled=True),
-            "Category": st.column_config.TextColumn("Category", width="medium"),
-            "Item Name": st.column_config.TextColumn("Item Name", width="large"),
+            "Category": st.column_config.TextColumn("Group / Tier Category", width="medium"),
+            "Item Name": st.column_config.TextColumn("Item / Component Specification", width="large"),
             "Rate": st.column_config.NumberColumn("Rate (₹)", format="₹%.2f"),
             "Vendor": st.column_config.TextColumn("Vendor", width="small", disabled=True),
-            "SKU": st.column_config.TextColumn("SKU", width="small", disabled=True),
-            "Link": st.column_config.LinkColumn("Link", display_text="Product Page ↗", disabled=True),
-            "Remove": st.column_config.CheckboxColumn("Remove", help="Tick to remove row", default=False, width="small"),
+            "SKU": st.column_config.TextColumn("SKU Reference", width="small", disabled=True),
+            "Link": st.column_config.LinkColumn("View ↗", display_text="Source URL ↗", disabled=True),
+            "Remove": st.column_config.CheckboxColumn("Remove", help="Omit this specifications line", default=False, width="small"),
         },
-        use_container_width=True,
-        hide_index=True,
-        key="boq_table_editor"
+        use_container_width=True, hide_index=True, key="boq_table_editor"
     )
 
+    # Sync interactive updates back to State variables
     for idx in range(len(st.session_state.boq_cart)):
         st.session_state.boq_cart[idx]["Category"] = edited_boq.loc[idx, "Category"]
         st.session_state.boq_cart[idx]["Item Name"] = edited_boq.loc[idx, "Item Name"]
         st.session_state.boq_cart[idx]["Rate"] = float(edited_boq.loc[idx, "Rate"])
 
     export_df = edited_boq[["Sr. No.", "Category", "Item Name", "Rate", "Vendor", "SKU", "Link"]].copy()
-    excel_bytes = dataframe_to_xlsx_bytes(export_df)
+    xlsx_out_bytes = dataframe_to_xlsx_bytes(export_df)
 
     b_col1, b_col2, b_col3 = st.columns([2, 1.5, 1.5])
     with b_col1:
         st.download_button(
-            label="📥 Export BOQ to Excel (.xlsx)",
-            data=excel_bytes,
-            file_name="Drone_Parts_BOQ.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            type="primary",
-            use_container_width=True
+            label="📥 Export BOQ to Excel (.xlsx)", data=xlsx_out_bytes, file_name="The_Drone_Builder_BOQ.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary", use_container_width=True
         )
     with b_col2:
-        if st.button("🗑️ Remove Checked Rows", type="secondary", use_container_width=True):
+        if st.button("🗑️ Remove checked specifications", type="secondary", use_container_width=True):
             keep_indices = edited_boq[edited_boq["Remove"] == False].index.tolist()
             st.session_state.boq_cart = [st.session_state.boq_cart[i] for i in keep_indices]
             st.rerun()
     with b_col3:
-        if st.button("🧹 Clear Entire BOQ", type="secondary", use_container_width=True):
+        if st.button("🧹 Clear Entire BOQ summary data", type="secondary", use_container_width=True):
             st.session_state.boq_cart = []
             st.rerun()
 else:
-    st.info("Your BOQ cart is currently empty. Search for a drone part above, tick the 'Select' checkbox on your desired vendor listing, and click 'Add Selected Item(s) to BOQ'.")
+    st.info("No items added yet. Simply look up motors, frames or hardware specs, tick checkboxes, and configure categorization tags to construct a complete part-build profile.")
 
 st.markdown('</div>', unsafe_allow_html=True)
