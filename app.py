@@ -9,8 +9,8 @@ from xml.sax.saxutils import escape
 import httpx
 from bs4 import BeautifulSoup
 import pandas as pd
-import streamlit as st
 from PIL import Image
+import streamlit as st
 
 try:
     from google import genai
@@ -44,14 +44,6 @@ st.markdown("""
         padding-top: 1.5rem;
         padding-bottom: 3rem;
     }
-    .app-header {
-        background: #FFFFFF;
-        border: 1px solid #E2E8F0;
-        border-radius: 12px;
-        padding: 16px 24px;
-        margin-bottom: 20px;
-        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
-    }
     .app-title {
         font-size: 1.55rem;
         font-weight: 700;
@@ -81,26 +73,6 @@ st.markdown("""
         align-items: center;
         gap: 6px;
     }
-    .triage-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-        gap: 10px;
-        margin-top: 12px;
-    }
-    .triage-button-card {
-        background: #FFFFFF;
-        border: 1px solid #D97706;
-        border-radius: 8px;
-        padding: 8px 12px;
-        cursor: pointer;
-        transition: all 0.2s ease-in-out;
-        font-size: 0.82rem;
-    }
-    .triage-button-card:hover {
-        background: #FFFBEB;
-        border-color: #B45309;
-        transform: translateY(-1px);
-    }
     .ai-advisor-card {
         background: #FFFFFF;
         border: 1px solid #BFDBFE;
@@ -116,6 +88,18 @@ st.markdown("""
         background: #EFF6FF;
         border: 1px solid #BFDBFE;
         color: #1D4ED8;
+        padding: 2px 9px;
+        border-radius: 6px;
+        font-weight: 600;
+        font-size: 0.78rem;
+        margin-right: 6px;
+        display: inline-block;
+        margin-top: 4px;
+    }
+    .lock-badge {
+        background: #DCFCE7;
+        border: 1px solid #86EFAC;
+        color: #166534;
         padding: 2px 9px;
         border-radius: 6px;
         font-weight: 600;
@@ -217,10 +201,11 @@ DANNY_NOTION_URL = "https://danny8.notion.site/Danny-s-Inventory-List-214fd82319
 BROWSER_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9", "Cache-Control": "no-cache",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Cache-Control": "no-cache",
 }
 
-# 185+ Brands & Technical patterns for Specs extraction
+# ----------------- 185+ DRONE BRANDS -----------------
 KNOWN_BRANDS = [
     "ZeroDrag", "Vimana", "Drakmatter", "Orange", "Bonka", "ProRange", "Garuda", "Quadkart", "Robokits", "Robu",
     "RadioMaster", "SpeedyBee", "T-Motor", "T-Hobby", "Hobbywing", "Holybro", "GEPRC", "Caddx", "CaddxFPV", "Walksnail",
@@ -234,78 +219,85 @@ KNOWN_BRANDS = [
     "HDZero", "Divimath", "Orqa", "FatShark", "RunCam", "Hawkeye", "Insta360", "GoPro", "TrueRC", "Maple Wireless",
     "ORT", "DALPROP", "Ethix", "APC", "Master Airscrew", "XOAR", "Eolo", "EFT", "JIYI", "Ublox", "u-blox", "Beitian",
     "BZGNSS", "Benewake", "LightWare", "Slamtec", "RPLIDAR", "mRo", "Ark Electronics", "Pixhawk", "ArduPilot", "HeeWing",
-    "ATOMRC", "ZOHD", "Sonicmodell", "X-UAV", "Mapbird", "VolantexRC", "FMS", "Freewing", "OMPHOBBY", "Amass", "JX Servo", "KST"
+    "ATOMRC", "ZOHD", "Sonicmodell", "X-UAV", "Mapbird", "VolantexRC", "FMS", "Freewing", "OMPHOBBY", "Amass", "JX Servo",
+    "KST", "Surpass Hobby", "FlashHobby", "Flash Hobby", "SunFun"
 ]
 
 BRAND_ALIASES = {
     "t-motors": "T-Motor", "tmotor": "T-Motor", "t-hobby": "T-Hobby (T-Motor)",
     "caddxfpv": "Caddx", "mateksys": "Matek", "gaoneng": "GNB", "team blacksheep": "TBS",
     "fat shark": "FatShark", "rekon": "RekonFPV", "hex": "CubePilot", "proficnc": "CubePilot",
+    "flash hobby": "FlashHobby",
 }
 
-# ----------------- BROAD QUERY RESOLUTION ENGINE -----------------
-# Maps extremely broad searches to strict categorised queries
+# ----------------- NON-DRONE / INDUSTRIAL / E-BIKE BLACKLIST -----------------
+NON_DRONE_BLACKLIST = {
+    "e-bike", "ebike", "my1016", "my1020", "scooter", "bicycle", "rickshaw", "wheelchair",
+    "dc geared", "geared motor", "gear motor", "bo motor", "stepper motor", "nema17", "nema 17",
+    "nema23", "nema 23", "775 motor", "rs775", "rs-775", "555 motor", "johnson motor",
+    "water pump", "submersible", "wiper motor", "linear actuator", "cnc spindle", "lathe",
+    "drill chuck", "vibration motor", "toy car", "robo race"
+}
+
+# ----------------- BROAD QUERY TRIAGE MAP -----------------
 EXTREMELY_GENERAL_MAP = {
     "motor": {
-        "patterns": [r"^(?:brushless\s+)?motor[s]?$", r"^bldc(?:[\s\-]+motor)?$", r"^brushless\b$"],
-        "message": "⚠️ Brushless motors range from 0.8g micro toys to giant Agriculture rotors. What FPV / UAV flight tier are you building?",
+        "patterns": [r"^(?:fpv\s+|drone\s+)?(?:brushless\s+)?motor[s]?$", r"^bldc(?:[\s\-]+motor[s]?)?$", r"^brushless\b$"],
+        "message": "⚠️ Brushless motors range from 0.8g micro whoop motors to heavy-lift rotors. Select the drone class you are building:",
         "categories": {
-            "Tiny Whoops (65-75mm)": {"search": "0802 motor", "subtext": "Stator 0702 / 0802 / 1002 (e.g. HappyModel, BetaFPV WHOOP)"},
-            "2\" - 2.5\" Cinematic / Micros": {"search": "1404 motor", "subtext": "Stator 1404 / 1204 / 1303 (e.g. AxisFlying, CineWhoop)"},
-            "3\" - 3.5\" Micro-Freestyle": {"search": "2004 motor", "subtext": "Stator 1507 / 1804 / 2004 (e.g. T-Motor, SpeedyBee)"},
-            "5\" Freestyle & Racing Standard": {"search": "2207 motor 1950KV", "subtext": "Stator 2207 / 2306 4S-6S (e.g. XING2, Eco II)"},
-            "7\" - 10\" Long Range / Heavy": {"search": "2807 motor", "subtext": "Stator 2806.5 / 2807 / 3115 (e.g. BrotherHobby, EM2807)"},
-            "Industrial & Agriculture UAV": {"search": "8120 motor", "subtext": "Stator 6008 / 8120 heavy payload (e.g. Hobbywing, T-Motor U8)"}
+            "Tiny Whoops (65-75mm)": {"search": "0802 motor", "subtext": "Stator 0702 / 0802 / 1002 (1S-2S Whoop)"},
+            "2\" - 2.5\" Cinewhoop / Micro": {"search": "1404 motor", "subtext": "Stator 1404 / 1204 / 1303.5"},
+            "3\" - 3.5\" Micro-Freestyle": {"search": "2004 motor", "subtext": "Stator 1507 / 1804 / 2004"},
+            "5\" Freestyle & Racing": {"search": "5 inch fpv motors", "subtext": "Stator 2207 / 2306 (4S-6S)"},
+            "7\" - 10\" Long Range": {"search": "7 inch long range motor", "subtext": "Stator 2806.5 / 2807 / 3115"},
+            "Heavy-Lift / Cinelifter (3115)": {"search": "3115 900kv motor", "subtext": "Stator 3115 900KV (9-10 inch)"},
         }
     },
     "frame": {
-        "patterns": [r"^frame[s]?$", r"^drone\s+frame[s]?$", r"^chassis\b$"],
-        "message": "⚠️ Quadcopter frames are defined by prop-clearance and layout. What size standard are you searching?",
+        "patterns": [r"^(?:fpv\s+|drone\s+)?frame[s]?$", r"^chassis\b$"],
+        "message": "⚠️ Drone frames are sized by propeller clearance. Select your target frame size:",
         "categories": {
-            "Tiny Whoop Micro Frame": {"search": "65mm whoop frame", "subtext": "65mm / 75mm flexible plastic frames (Meteor, Mobula)"},
-            "2.5\" CineWhoop Frame": {"search": "2.5 inch frame", "subtext": "2.5\" Prop clear with protective ducts (Bee25, Pavo25)"},
-            "3\" to 3.5\" Cine/Micro Frame": {"search": "3.5 inch frame", "subtext": "Pavo35, CineLog35, Volador 3.5\" lightweight frames"},
-            "5\" Standard FPV Freestyle": {"search": "5 inch frame Mark5", "subtext": "Mark5, Apex, TBS Source One V5 carbon-fiber frames"},
-            "7\" - 10\" Long Range Frame": {"search": "7 inch frame Mark4", "subtext": "7\" to 10\" extended-arm cruiser frames (Chimera7)"},
-            "Agritech & Mapping Chassis": {"search": "E616P frame", "subtext": "Heavy-lift quad or hex Agritech platforms (E410P, Tarot)"}
+            "Tiny Whoop (65-75mm)": {"search": "65mm whoop frame", "subtext": "Meteor65, Air65, Mobula"},
+            "2.5\" CineWhoop Frame": {"search": "2.5 inch frame", "subtext": "Bee25, Pavo25, Cine25, CT25"},
+            "3\" to 3.5\" Frame": {"search": "3.5 inch frame", "subtext": "Pavo35, CineLog35, Volador 3.5"},
+            "5\" Standard Freestyle": {"search": "5 inch frame", "subtext": "Mark5, Mark4 5\", Source One V5"},
+            "7\" - 10\" Long Range": {"search": "7 inch frame", "subtext": "Mark4 7\"/10\", Chimera7, LC75"},
+            "Agriculture / Hex / Heavy": {"search": "S550 frame", "subtext": "S550, Tarot 650, EFT E410P/E616P"}
         }
     },
     "fc": {
         "patterns": [r"^(?:flight\s+)?controller[s]?$", r"^fc\b$", r"^autopilot\b$"],
-        "message": "⚠️ Flight controllers span microscopic whoops up to industrial autonomous units. Pick an application:",
+        "message": "⚠️ Flight controllers vary by mounting pattern and firmware. Choose your application:",
         "categories": {
-            "Tiny Whoop Flight Controller": {"search": "F4 1S AIO flight controller", "subtext": "AIO boards with built-in SPI Rx and Esc (F4 1S AIO)"},
-            "Toothpick / Micro AIO FC": {"search": "F405 AIO 40A", "subtext": "F405/F722 AIO single-board with built-in 20A-40A ESCs"},
-            "Standard FPV 30x30 / 20x20 FC": {"search": "F405 Flight Controller", "subtext": "F405, F722 & H743 stack controllers with sensor integration"},
-            "Autonomous Autopilots": {"search": "Pixhawk 6C autopilot", "subtext": "Mission-capable autonomous setups (Pixhawk, Cube Orange)"},
-            "Agriculture UAV Flight Controller": {"search": "JIYI K++ flight controller", "subtext": "Dedicated mapping/spraying computers (JIYI K++, EFT V9)"}
+            "Tiny Whoop 1S-2S AIO": {"search": "1S AIO flight controller", "subtext": "25.5x25.5mm Whoop AIO boards"},
+            "Cinewhoop / Toothpick AIO": {"search": "F405 AIO", "subtext": "20A-40A Toothpick / Cinewhoop AIO"},
+            "5\"-10\" FPV Stack (F405/F722)": {"search": "5 inch stack", "subtext": "30.5x30.5mm F405/F722 FC + 4in1 ESC"},
+            "Autonomous Pixhawk / Cube": {"search": "autopilot flight controller", "subtext": "Pixhawk, Cube Orange, Matek H743"},
         }
     },
     "propeller": {
-        "patterns": [r"^propeller[s]?$", r"^prop[s]?$", r"^blade[s]?$"],
-        "message": "⚠️ Drone propellers are size, pitch and mounting specific. What blade scale are you selecting?",
+        "patterns": [r"^(?:fpv\s+|drone\s+)?propeller[s]?$", r"^prop[s]?$", r"^blade[s]?$"],
+        "message": "⚠️ Select the propeller diameter for your drone build:",
         "categories": {
-            "Micro / Whoop Blades": {"search": "31mm whoop props", "subtext": "31mm / 40mm / 2\" push-on propellers"},
-            "2.5\" CineWhoop Propellers": {"search": "gemfan D63 propellers", "subtext": "Gemfan D63, 2512 micro-pitch ducted tri-blades"},
-            "3\" - 3.5\" Propellers": {"search": "3520 propellers", "subtext": "3016, 3020, 3520 multi-blade patterns (Gemfan)"},
-            "5\" Freestyle & Racing Standard": {"search": "51433 propellers", "subtext": "5\" high-efficiency FPV tri-blades (e.g. HQProp, 51466)"},
-            "7\" - 10\" Long Range Props": {"search": "7040 propellers", "subtext": "Large 7\", 8\", 10\" flex and carbon patterns (Dalprop)"},
-            "Agri / Industrial Carbon Props": {"search": "3010 carbon propellers", "subtext": "Large-diameter single-bolt carbon or nylon (e.g. 3010, T-Motor)"}
+            "2.5\" Cinewhoop Props": {"search": "2.5 inch prop", "subtext": "Gemfan D63, 2512, 2520"},
+            "3\" - 3.5\" Props": {"search": "3.5 inch prop", "subtext": "3016, 3520, D90"},
+            "5\" Freestyle & Racing Props": {"search": "5 inch prop", "subtext": "51433, 51466, 5043"},
+            "7\" - 10\" Long Range Props": {"search": "7 inch prop", "subtext": "7040, 8040, 9045, 1050"},
         }
     },
     "battery": {
-        "patterns": [r"^battery$", r"^batteries$", r"^lipo$", r"^power\s*pack$"],
-        "message": "⚠️ Drone batteries must match build current and voltage (S-rating). Choose the target size:",
+        "patterns": [r"^(?:fpv\s+|drone\s+)?battery$", r"^batteries$", r"^lipo$", r"^power\s*pack$"],
+        "message": "⚠️ Select the battery voltage and capacity range:",
         "categories": {
-            "Tiny Whoop 1S Battery": {"search": "1S 450mah lipo", "subtext": "Single cell PH2.0 or BT2.0 packs for 65mm-75mm tiny whoops"},
-            "Cinewhoop / Toothpick Battery": {"search": "4S 850mah lipo", "subtext": "Small 3S-4S high discharge packs (Tattu, CNHL)"},
-            "Standard FPV 5\" Freestyle": {"search": "6S 1300mah lipo", "subtext": "Heavy duty high-C 6S FPV flight packs (Tattu, CNHL)"},
-            "7\" Long Range Cruise": {"search": "6S 3300mah lipo", "subtext": "Large high-capacity 6S cruising LiPo or Li-Ion (Molicel)"},
-            "Mapping & Survey UAV Battery": {"search": "6S 22000mah battery", "subtext": "Heavy-lift solid state or high-capacity powerpacks (Herewin)"}
+            "Tiny Whoop 1S Battery": {"search": "1S 450mah lipo", "subtext": "BT2.0 / PH2.0 300-550mAh"},
+            "Cinewhoop 4S (650-850mAh)": {"search": "4S 850mah lipo", "subtext": "XT30 4S 650mAh-850mAh"},
+            "5\" FPV 6S (1100-1500mAh)": {"search": "5 inch lipo battery", "subtext": "XT60 4S/6S 1100-1550mAh"},
+            "Long Range 6S Li-Ion / LiPo": {"search": "6S 3000mah", "subtext": "21700 Li-Ion / Large 6S Packs"},
         }
     }
 }
 
+# ----------------- AI DRONE BUILD COMPATIBILITY MATRIX -----------------
 DRONE_SIZE_COMPATIBILITY = {
     "tinywhoop": {
         "size_patterns": [r"\b65\s*mm\b", r"\b75\s*mm\b", r"\btiny\s*whoop\b", r"\b1\.2\s*(?:inch|\")\b", r"\b1\.6\s*(?:inch|\")\b"],
@@ -479,6 +471,7 @@ DRONE_SIZE_COMPATIBILITY = {
     }
 }
 
+# ----------------- CATEGORY & EXCLUSION POOLS -----------------
 CATEGORY_RULES = [
     ("Radio Transmitter / Controller", [
         r"\bpocket\b", r"\bboxer\b", r"\btx16s\b", r"\btx12\b", r"\bzorro\b",
@@ -601,6 +594,17 @@ GENERAL_ACCESSORY_WORDS = {
     "dummy", "practice board", "smoke stopper", "trainer cable", "simulator dongle"
 }
 
+ALL_KNOWN_STATORS = {
+    "0702", "0802", "0803", "1002", "1003", "1102", "1103", "1104", "1105", "1106",
+    "1202", "1204", "1303", "1306", "1404", "1407", "1408", "1504", "1505", "1506",
+    "1507", "1604", "1606", "1804", "1806", "2004", "2005", "2006", "2104", "2105",
+    "2203", "2204", "2205", "2206", "2207", "2208", "2212", "2216", "2305", "2306",
+    "2307", "2308", "2405", "2407", "2408", "2506", "2507", "2508", "2806", "2807",
+    "2808", "2810", "2812", "2814", "2820", "3110", "3112", "3115", "3214", "3508",
+    "3510", "3515", "3520", "4004", "4006", "4008", "4108", "4114", "4215", "5008",
+    "5010", "5208", "6008", "6215", "8120", "8318", "10010"
+}
+
 MODEL_CONFLICT_GROUPS = [
     {"pocket", "boxer", "tx16s", "tx12", "zorro", "mt12", "gx12", "t-lite", "t-pro", "t20"},
     {"f405", "f722", "h743", "f411", "g473"},
@@ -608,6 +612,7 @@ MODEL_CONFLICT_GROUPS = [
     {"rp1", "rp2", "rp3", "rp4", "ep1", "ep2", "xr1", "xr2", "xr3", "xr4"},
     {"m8n", "m9n", "m10", "here3", "here4"},
     {"o3", "o4", "avatar", "hdzero"},
+    ALL_KNOWN_STATORS,
 ]
 
 SYNONYM_GROUPS = {
@@ -632,8 +637,8 @@ SYNONYM_GROUPS = {
     "tmotor": ["tmotor", "t-motor", "t-hobby", "t motor"],
     "t-motor": ["tmotor", "t-motor", "t-hobby", "t motor"],
     "betafpv": ["betafpv", "beta fpv"],
-    "motor": ["motor", "motors", "bldc"],
-    "motors": ["motor", "motors", "bldc"],
+    "motor": ["motor", "motors", "bldc", "kv"],
+    "motors": ["motor", "motors", "bldc", "kv"],
     "frame": ["frame", "frames", "kit", "cinewhoop"],
     "frames": ["frame", "frames", "kit", "cinewhoop"],
     "prop": ["prop", "props", "propeller", "propellers"],
@@ -663,12 +668,38 @@ SPEC_PATTERNS = [
     r"\bHall\s*Gimbal\b|\bAG01\b|\bEdgeTX\b"
 ]
 
-# ----------------- STEP 1: AI-ASSISTED HARDWARE ADVISOR & QUERY PLANNER -----------------
+# ----------------- IMAGE & INVALID URL HELPER -----------------
+def is_image_or_invalid_product_link(title: str, url: str) -> bool:
+    """Rejects image links, 'Image 146' markdown labels, and non-product URLs."""
+    t_low = title.lower().strip()
+    u_low = url.lower().strip()
+
+    # 1. Reject titles that are actually image alt-tags (e.g., "Image 146", "!Image 12", "IMG_2024")
+    if re.match(r"^!?\s*(?:image|img|photo|picture|pic|banner|logo|icon|thumbnail|untitled)\b", t_low):
+        return True
+    if re.search(r"\.(?:jpg|jpeg|png|webp|gif|svg|bmp|pdf)$", t_low):
+        return True
+
+    # 2. Reject URLs that point to image files or static CDN assets
+    if re.search(r"\.(?:jpg|jpeg|png|webp|gif|svg|bmp|ico|pdf|css|js)(?:\?.*)?$", u_low):
+        return True
+    if any(img_pat in u_low for img_pat in [
+        "notion.site/image/", "/_next/image", "/wp-content/uploads/",
+        "cloudinary.com", "amazonaws.com", "/cdn/shop/files/", "/cdn/shop/products/",
+        "facebook.com", "instagram.com", "twitter.com", "linkedin.com", "youtube.com",
+        "/cart", "/checkout", "/my-account", "/login", "/wishlist", "add-to-cart=",
+        "/tag/", "/blog/", "javascript:", "mailto:", "tel:"
+    ]):
+        return True
+
+    return False
+
+# ----------------- STEP 1: AI-ASSISTED HARDWARE ADVISOR & TECHNICAL LOCK PLANNER -----------------
 def understand_user_query(raw_query: str, api_key: str = "") -> dict:
     q_clean = re.sub(r"[^a-zA-Z0-9\.\-\"]", " ", raw_query).strip()
     q_lower = q_clean.lower()
 
-    # Find extremadamente-general maps (broad non-technical categories)
+    # Check if query is an overly general single-category word (e.g., just "brushless motor")
     triage_info = None
     for term, t_map in EXTREMELY_GENERAL_MAP.items():
         if any(re.search(pat, q_lower) for pat in t_map["patterns"]):
@@ -684,7 +715,15 @@ def understand_user_query(raw_query: str, api_key: str = "") -> dict:
             category_exclusions = set(exclusions)
             break
 
-    # 2. Check Size/Build-Class Assisted Queries (e.g. "5 inch FPV motors", "2.5 inch frame")
+    # 2. Extract Strict Technical Locks from User Query (Stator, KV, Voltage, Amperage)
+    # Example: "3115 900kv motor" -> locked_stator = "3115", locked_kv = "900"
+    locked_stators = [s for s in ALL_KNOWN_STATORS if re.search(rf"\b{re.escape(s)}\b", q_lower)]
+    kv_matches = re.findall(r"\b(\d{3,5})\s*kv\b", q_lower)
+    locked_kvs = list(dict.fromkeys(kv_matches))
+    cell_matches = re.findall(r"\b([1-8]s)\b", q_lower)
+    locked_cells = list(dict.fromkeys(cell_matches))
+
+    # 3. Check Size/Build-Class Assisted Queries (ONLY if user didn't already specify an exact stator/KV)
     ai_explanation = ""
     search_queries = []
     must_type_tokens = []
@@ -703,7 +742,8 @@ def understand_user_query(raw_query: str, api_key: str = "") -> dict:
     elif re.search(r"\bbattery\b|\bbatteries\b|\blipo\b|\bmah\b", q_lower):
         comp_key = "battery"
 
-    if comp_key:
+    # Only use broad size-class expansion when user didn't lock a specific stator or KV
+    if comp_key and not locked_stators and not locked_kvs:
         for size_class, size_data in DRONE_SIZE_COMPATIBILITY.items():
             if any(re.search(pat, q_lower) for pat in size_data["size_patterns"]):
                 if comp_key in size_data:
@@ -715,8 +755,8 @@ def understand_user_query(raw_query: str, api_key: str = "") -> dict:
                     is_ai_expanded = True
                     break
 
-    # 3. Functional Beginner Queries
-    if not is_ai_expanded:
+    # 4. Functional Beginner Queries
+    if not is_ai_expanded and not locked_stators and not locked_kvs:
         if re.search(r"\blong\s*range\s*(?:rx|receiver)\b", q_lower):
             detected_category = "FPV / RC Receiver (RX)"
             ai_explanation = "Long-Range Telemetry Receivers -> 900MHz / 915MHz ELRS, TBS Crossfire, & Diversity Receivers"
@@ -732,7 +772,7 @@ def understand_user_query(raw_query: str, api_key: str = "") -> dict:
             any_spec_tokens = ["pixhawk", "cube", "h743", "f405-wte", "f405-wing", "cuav", "jiyi", "ardupilot"]
             is_ai_expanded = True
 
-    # 4. Standard Model/Part Query
+    # 5. Specific Technical / Model Query (e.g., "3115 900kv motor", "Radiomaster Pocket")
     stop_words = {
         "for", "with", "and", "the", "in", "of", "to", "a", "an", "drone",
         "fpv", "rc", "buy", "india", "online", "best", "compatible", "inch"
@@ -743,58 +783,34 @@ def understand_user_query(raw_query: str, api_key: str = "") -> dict:
 
     if not is_ai_expanded:
         search_queries = [q_clean]
-        if " " in q_clean and len(raw_tokens) == 2:
-            search_queries.append("".join(raw_tokens))
-        ai_explanation = f"Direct Component Search ({detected_category})"
+        # Smart fan-out for Stator + KV queries (e.g. "3115 900kv motor" -> also search "3115 900kv", "3115-900kv", "3115 motor")
+        if locked_stators and locked_kvs:
+            stator = locked_stators[0]
+            kv = locked_kvs[0]
+            search_queries = [
+                f"{stator} {kv}kv",
+                f"{stator}-{kv}kv",
+                f"{stator} {kv}kv motor",
+                f"{stator} motor"
+            ]
+            ai_explanation = f"Precision Spec Lock -> Stator: {stator} | Rating: {kv}KV ({detected_category})"
+        elif locked_stators:
+            stator = locked_stators[0]
+            search_queries = [f"{stator} motor", stator]
+            ai_explanation = f"Precision Stator Lock -> Stator: {stator} ({detected_category})"
+        else:
+            if " " in q_clean and len(raw_tokens) == 2:
+                search_queries.append("".join(raw_tokens))
+            ai_explanation = f"Direct Component Search ({detected_category})"
 
-    # 5. Gemini AI Planner (Dynamic fallback logic for unmapped queries)
-    if GEMINI_AVAILABLE and api_key and not triage_info:
-        try:
-            class AIQueryPlan(BaseModel):
-                category: str
-                technical_explanation: str
-                vendor_search_queries: list[str] = Field(description="Up to 6 short technical search queries for stores")
-                compatible_model_or_spec_keywords: list[str] = Field(description="Stator sizes, model codes, or spec keywords")
-                is_conceptual_or_size_query: bool
-
-            client = genai.Client(api_key=api_key)
-            res = client.models.generate_content(
-                model="gemini-2.0-flash",
-                contents=f"""
-                You are an expert Indian FPV & UAV drone hardware engineer.
-                User searched for: "{raw_query}"
-                Categorize this requirement and expand it to compatible part codes/stators (e.g. 2207 for 5-inch motors) if general or conceptual.
-                """,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    response_schema=AIQueryPlan,
-                    temperature=0.1,
-                ),
-            )
-            plan = json.loads(res.text)
-            if plan.get("category"):
-                detected_category = plan["category"]
-            if plan.get("technical_explanation") and not is_ai_expanded:
-                ai_explanation = plan["technical_explanation"]
-            if plan.get("vendor_search_queries"):
-                for sq in plan["vendor_search_queries"]:
-                    if sq and sq.lower() not in [x.lower() for x in search_queries]:
-                        search_queries.append(sq)
-            if plan.get("is_conceptual_or_size_query") and not is_ai_expanded:
-                is_ai_expanded = True
-                must_type_tokens = raw_tokens[:1] + [w.lower() for w in plan.get("compatible_model_or_spec_keywords", [])[:6]]
-                any_spec_tokens = [w.lower() for w in plan.get("compatible_model_or_spec_keywords", [])]
-        except Exception:
-            pass
-
-    # Deduplicate search queries (keep up to 8 for parallel scan)
+    # Deduplicate search queries
     dedup_queries = []
     for sq in search_queries:
         if sq.strip() and sq.strip().lower() not in [x.lower() for x in dedup_queries]:
             dedup_queries.append(sq.strip())
     dedup_queries = dedup_queries[:8]
 
-    # Sibling verification patterns
+    # Identify Conflicting Sibling Models & Stators
     conflicting_tokens = set()
     if not is_ai_expanded:
         q_nospace = q_lower.replace(" ", "")
@@ -824,6 +840,9 @@ def understand_user_query(raw_query: str, api_key: str = "") -> dict:
         "is_ai_expanded": is_ai_expanded,
         "is_extremely_general": triage_info is not None,
         "triage_info": triage_info,
+        "locked_stators": locked_stators,
+        "locked_kvs": locked_kvs,
+        "locked_cells": locked_cells,
         "must_tokens": raw_tokens,
         "must_type_tokens": must_type_tokens,
         "any_spec_tokens": any_spec_tokens,
@@ -831,44 +850,85 @@ def understand_user_query(raw_query: str, api_key: str = "") -> dict:
         "exclude_words": active_exclusions,
     }
 
-# ----------------- STEP 2: HIGH-RECALL & HIGH-PRECISION INTENT VERIFIER -----------------
+# ----------------- STEP 2: STRICT TECHNICAL INTENT VERIFIER -----------------
 def verify_product_matches_intent(title: str, intent: dict, extra_context: str = "", url: str = "") -> tuple[bool, int]:
     if not title or len(title.strip()) < 5:
         return False, 0
 
+    # 1. Block all Image links, 'Image 146' markdown labels, and static file URLs
+    if is_image_or_invalid_product_link(title, url):
+        return False, 0
+
     t_lower = title.lower().strip()
     t_compact = re.sub(r"[\s\-_]", "", t_lower)
-    combined_lower = f"{t_lower} {extra_context.lower()} {url.lower()}"
-    combined_compact = re.sub(r"[\s\-_]", "", combined_lower)
 
+    # 2. Block navigation labels
     nav_blacklist = {
         "home", "shop", "cart", "view cart", "add to cart", "checkout", "my account",
         "login", "register", "wishlist", "compare", "track order", "contact us",
         "about us", "privacy policy", "terms and conditions", "read more", "search",
         "frames", "motors", "propellers", "view details"
     }
-    if t_lower in nav_blacklist:
+    if t_lower in nav_blacklist or re.match(r"^\d+(\.\d+)?\"?\s*frames$", t_lower):
         return False, 0
 
+    # 3. Block Non-Drone / Industrial / E-Bike Motors (e.g., E-BIKE MY1016, 775 motor, BO motor)
+    for bad_term in NON_DRONE_BLACKLIST:
+        if bad_term in t_lower:
+            return False, 0
+
+    # 4. Block excluded accessory / spare-part words in the product title
     for exc in intent["exclude_words"]:
         if re.search(rf"\b{re.escape(exc)}\b", t_lower):
             return False, 0
 
+    # 5. STRICT TECHNICAL SPEC LOCKS (Stator & KV Enforcement in Title!)
+    # If user typed a stator (e.g. 3115), the product title MUST contain 3115
+    if intent.get("locked_stators"):
+        for req_stator in intent["locked_stators"]:
+            if not re.search(rf"(?:^|[^0-9]){re.escape(req_stator)}(?:[^0-9]|$)", t_lower):
+                return False, 0
+
+    # If user typed a KV rating (e.g. 900kv), the product title or snippet MUST match that exact KV,
+    # and if the title lists any OTHER KV rating (like 2300KV or 800KV), REJECT IT!
+    if intent.get("locked_kvs"):
+        req_kvs = set(intent["locked_kvs"])
+        title_kvs = set(re.findall(r"(\d{3,5})\s*kv\b", t_lower))
+        if title_kvs:
+            if not (req_kvs & title_kvs):
+                return False, 0
+        else:
+            # If KV isn't written with 'KV' suffix, check for patterns like '3115-900' or '900kv' in snippet
+            kv_matched = False
+            for r_kv in req_kvs:
+                if re.search(rf"\b{re.escape(r_kv)}\s*kv\b", extra_context.lower()) or re.search(rf"[\-\s]{re.escape(r_kv)}\b", t_lower):
+                    kv_matched = True
+                    break
+            if not kv_matched:
+                return False, 0
+
     q_lower = intent["raw_query"].lower()
 
-    if intent.get("is_ai_expanded") or intent.get("is_extremely_general"):
-        # Match primary component pattern in title
+    # 6A. Matching Mode for AI-Expanded Size/Class Queries (e.g., "5 inch FPV motors", "2.5 inch frame")
+    if intent.get("is_ai_expanded"):
+        combined_lower = f"{t_lower} {extra_context.lower()}"
+        combined_compact = re.sub(r"[\s\-_]", "", combined_lower)
+
         type_ok = any(tok in t_lower or re.sub(r"[\s\-_]", "", tok) in t_compact for tok in intent["must_type_tokens"])
         if not type_ok:
             return False, 0
 
-        # Eliminate general multi-category spares & protectors (TPU cases, screw hardware, replacement shafts)
         if re.search(r"\b(?:bearing|shaft|screw|bell|mount|guard|strap|tpu|arm|plate|canopy)\b.*\bfor\b", t_lower):
             return False, 0
 
-        # Match any specs/stators on the expanded plan
-        spec_in_title = any(spec in t_lower or re.sub(r"[\s\-_]", "", spec) in t_compact for spec in intent["any_spec_tokens"])
-        spec_in_context = any(spec in combined_lower or re.sub(r"[\s\-_]", "", spec) in combined_compact for spec in intent["any_spec_tokens"])
+        spec_in_title = any(
+            spec in t_lower or re.sub(r"[\s\-_]", "", spec) in t_compact
+            for spec in intent["any_spec_tokens"]
+        )
+        spec_in_context = any(
+            spec in combined_lower or re.sub(r"[\s\-_]", "", spec) in combined_compact
+            for spec in intent["any_spec_tokens"]
+        )
 
         if not (spec_in_title or spec_in_context):
             return False, 0
@@ -878,7 +938,8 @@ def verify_product_matches_intent(title: str, intent: dict, extra_context: str =
             score += 40
         return True, score
 
-    # Sibling boundary checks (blocks parts labeled "A for B" if "A" is not the focus)
+    # 6B. Matching Mode for Specific Queries (e.g., "3115 900kv motor", "Radiomaster Pocket")
+    # CRITICAL FIX: Match mandatory tokens strictly against TITLE (`t_lower` / `t_compact`), NEVER against search URL!
     if " for " not in q_lower:
         parts_split = re.split(r"\b(?:for|compatible\s+with|suitable\s+for|fits|replacement\s+for)\b", t_lower, maxsplit=1)
         if len(parts_split) == 2:
@@ -888,21 +949,25 @@ def verify_product_matches_intent(title: str, intent: dict, extra_context: str =
                     return False, 0
 
     for tok in intent["must_tokens"]:
+        # If this token is "motor" and the title already matched a locked stator + KV (e.g. "BrotherHobby Avenger 3115 900KV"), allow it
+        if tok in ("motor", "motors") and (intent.get("locked_stators") or intent.get("locked_kvs")):
+            continue
         synonyms = SYNONYM_GROUPS.get(tok, [tok])
         tok_matched = False
         for syn in synonyms:
             syn_compact = re.sub(r"[\s\-_]", "", syn)
-            if syn in t_lower or syn_compact in t_compact or syn in combined_lower:
+            if syn in t_lower or syn_compact in t_compact:
                 tok_matched = True
                 break
         if not tok_matched:
             return False, 0
 
+    # Reject any conflicting model or stator in the title (e.g., rejects 2205 or 3110 when searching 3115)
     for conflict in intent["conflicting_tokens"]:
-        if re.search(rf"\b{re.escape(conflict)}\b", t_lower):
+        if re.search(rf"(?:^|[^0-9a-z]){re.escape(conflict)}(?:[^0-9a-z]|$)", t_lower):
             return False, 0
 
-    score = 100
+    score = 120
     if q_lower in t_lower:
         score += 50
     if intent["must_tokens"] and t_lower.startswith(intent["must_tokens"][0]):
@@ -913,7 +978,7 @@ def verify_product_matches_intent(title: str, intent: dict, extra_context: str =
 
 # ----------------- BRAND & SPEC EXTRACTION -----------------
 def detect_brand(title: str, default_brand: str = "") -> str:
-    if default_brand and default_brand.lower() not in ["generic", "unknown", "n/a", ""]:
+    if default_brand and default_brand.lower() not in ["generic", "unknown", "n/a", "image", ""]:
         alias_check = BRAND_ALIASES.get(default_brand.lower().strip())
         return alias_check if alias_check else default_brand
 
@@ -927,15 +992,21 @@ def detect_brand(title: str, default_brand: str = "") -> str:
     return first_word if len(first_word) > 2 else "Generic"
 
 def extract_specs_from_title(title: str, extra_desc: str = "") -> str:
-    combined = f"{title} {extra_desc}"
+    # Extract specs primarily from the product title so neighbor items don't pollute the spec column
     found = []
     for pat in SPEC_PATTERNS:
-        for m in re.findall(pat, combined, re.I):
+        for m in re.findall(pat, title, re.I):
             clean_m = m.strip()
             if clean_m.upper() not in [x.upper() for x in found]:
                 found.append(clean_m)
+    if len(found) < 2 and extra_desc:
+        for pat in SPEC_PATTERNS:
+            for m in re.findall(pat, extra_desc[:200], re.I):
+                clean_m = m.strip()
+                if clean_m.upper() not in [x.upper() for x in found]:
+                    found.append(clean_m)
     if found:
-        return " · ".join(found[:7])
+        return " · ".join(found[:6])
     return "Standard Spec"
 
 def parse_inr_price(text: str) -> float:
@@ -952,9 +1023,52 @@ def parse_inr_price(text: str) -> float:
     return 0.0
 
 # ----------------- PARSE / DEEP WEB SCRAPING -----------------
-def parse_markdown_listing(md_text: str, vendor: str, base_url: str, intent: dict) -> list[dict]:
+def parse_danny_notion_listing(md_text: str, intent: dict) -> list[dict]:
+    """
+    Dedicated parser for Danny's Notion Inventory List.
+    Strips all ![Image ...] tags and only matches genuine text product rows with prices.
+    """
     items = []
-    lines = [l.strip() for l in md_text.splitlines() if l.strip()]
+    # Remove markdown image references completely
+    cleaned_md = re.sub(r"!?\[(?:Image\s*\d*[^\]]*)\]\([^\)]+\)", "", md_text, flags=re.I)
+    lines = [l.strip() for l in cleaned_md.splitlines() if l.strip()]
+
+    for i, line in enumerate(lines):
+        # Skip short lines or pure price lines
+        if len(line) < 8 or re.match(r"^(?:₹|Rs\.?)\s*[0-9,]+", line, re.I):
+            continue
+        clean_title = re.sub(r"^(?:####+|###+|\*+|\-+)\s*", "", line).strip()
+        is_match, score = verify_product_matches_intent(clean_title, intent, "", DANNY_NOTION_URL)
+        if not is_match:
+            continue
+
+        # Look at current line + next 2 lines for price
+        window = " ".join(lines[i:min(len(lines), i + 3)])
+        if re.search(r"\bout of stock\b|\bsold out\b", window, re.I):
+            continue
+        price = parse_inr_price(window)
+        if price > 0:
+            items.append({
+                "product_name": clean_title,
+                "specification": extract_specs_from_title(clean_title, ""),
+                "brand_name": detect_brand(clean_title),
+                "vendor_name": "Danny’s Inventory List",
+                "sku_name": "N/A",
+                "rate": price,
+                "in_stock": True,
+                "link": DANNY_NOTION_URL,
+                "relevance": score
+            })
+    return items
+
+def parse_markdown_listing(md_text: str, vendor: str, base_url: str, intent: dict) -> list[dict]:
+    if vendor == "Danny’s Inventory List":
+        return parse_danny_notion_listing(md_text, intent)
+
+    items = []
+    # Strip markdown image tags first so `[![Image 146](img.jpg)](prod_url)` becomes `[](prod_url)` or clean text
+    cleaned_md = re.sub(r"!\[[^\]]*\]\([^\)]+\)", "", md_text)
+    lines = [l.strip() for l in cleaned_md.splitlines() if l.strip()]
 
     for i, line in enumerate(lines):
         for m in re.finditer(r"\[([^\[\]]+)\]\((https?://[^\s\)]+)\)", line):
@@ -964,11 +1078,7 @@ def parse_markdown_listing(md_text: str, vendor: str, base_url: str, intent: dic
             clean_title = re.sub(r"^(?:####+|###+|\*+|\-+)\s*", "", raw_title).strip()
             clean_title = re.sub(r"(?:Add to cart|Add to Wishlist|Add to Compare|Quick View).*$", "", clean_title, flags=re.I).strip()
 
-            if any(skip_u in url.lower() for skip_u in [
-                "facebook.com", "instagram.com", "twitter.com", "linkedin.com", "youtube.com",
-                "/cart", "/checkout", "/my-account", "/login", "/wishlist", "add-to-cart=",
-                "/tag/", "/blog/", "javascript:"
-            ]):
+            if is_image_or_invalid_product_link(clean_title, url):
                 continue
 
             end_idx = min(len(lines), i + 5)
@@ -979,7 +1089,7 @@ def parse_markdown_listing(md_text: str, vendor: str, base_url: str, intent: dic
                 window_lines.append(lines[j])
             window_blob = " \n ".join(window_lines)
 
-            if re.search(r"\bout of stock\b|\bsold out\b", window_blob, re.I):
+            if re.search(r"\bout of stock\b|\bsold out\b|\bcurrently unavailable\b", window_blob, re.I):
                 continue
 
             is_match, score = verify_product_matches_intent(clean_title, intent, window_blob, url)
@@ -1008,7 +1118,8 @@ def parse_html_dom(html_text: str, vendor: str, base_url: str, intent: dict) -> 
     soup = BeautifulSoup(html_text, "html.parser")
     cards = soup.select(
         ".product, li.product, .product-grid-item, .type-product, "
-        ".product-item, .product-card, .product-layout, .productListing-odd, .productListing-even"
+        ".product-item, .product-card, .product-layout, .productListing-odd, .productListing-even, "
+        ".theme-product-box, .zpro-product"
     )
 
     for card in cards:
@@ -1028,6 +1139,9 @@ def parse_html_dom(html_text: str, vendor: str, base_url: str, intent: dict) -> 
         link = a_tag["href"] if a_tag and a_tag.has_attr("href") else base_url
         if link.startswith("/"):
             link = f"{base_url.rstrip('/')}{link}"
+
+        if is_image_or_invalid_product_link(title, link):
+            continue
 
         is_match, score = verify_product_matches_intent(title, intent, card_text, link)
         if not is_match:
@@ -1102,7 +1216,6 @@ async def fetch_multi_engine_web_index(
         for q_str in queries_to_run[:2]:
             site_q = f"site:{domain} {q_str}"
 
-            # Engine 1: Yahoo India (Quick fallback without botwalls)
             y_url = f"https://in.search.yahoo.com/search?p={quote_plus(site_q)}&n=15"
             try:
                 resp = await session.get(y_url, headers=BROWSER_HEADERS, timeout=9.0)
@@ -1125,13 +1238,13 @@ async def fetch_multi_engine_web_index(
                             category_urls_to_follow.add(href)
                             continue
 
-                        if any(skip in href.lower() for skip in ["/tag/", "/blog/", "/brand/", "/cart", "/my-account"]):
-                            continue
-
                         clean_title = re.split(
                             r"\s+[\-\|–]\s+(?:Buy|Robu|Zbotic|Quadkart|Design Info|Indian Robo|Robokits|Xrobo|Tujo|Anubis|FPV|Hi Tech|UAV)",
                             raw_title, flags=re.I
                         )[0].strip()
+
+                        if is_image_or_invalid_product_link(clean_title, href):
+                            continue
 
                         snippet = snip_el.get_text(" ", strip=True) if snip_el else ""
                         if re.search(r"\bout of stock\b|\bsold out\b", f"{clean_title} {snippet}", re.I):
@@ -1143,9 +1256,15 @@ async def fetch_multi_engine_web_index(
 
                         sku_m = re.search(r"SKU\s*[:#\-]?\s*([A-Za-z0-9_\-]+)", f"{clean_title} {snippet}", re.I)
                         items.append({
-                            "product_name": clean_title, "specification": extract_specs_from_title(clean_title, snippet),
-                            "brand_name": detect_brand(clean_title), "vendor_name": vendor, "sku_name": sku_m.group(1) if sku_m else "N/A",
-                            "rate": parse_inr_price(f"{clean_title} {snippet}"), "in_stock": True, "link": href, "relevance": score
+                            "product_name": clean_title,
+                            "specification": extract_specs_from_title(clean_title, snippet),
+                            "brand_name": detect_brand(clean_title),
+                            "vendor_name": vendor,
+                            "sku_name": sku_m.group(1) if sku_m else "N/A",
+                            "rate": parse_inr_price(f"{clean_title} {snippet}"),
+                            "in_stock": True,
+                            "link": href,
+                            "relevance": score
                         })
             except Exception:
                 pass
@@ -1162,7 +1281,6 @@ async def scrape_woocommerce_vendor(
     found_items = []
     queries = intent["search_queries"]
 
-    # Layer 1: WooCommerce JSON API batches
     async def fetch_wc_api_single(q: str) -> list[dict]:
         q_items = []
         api_url = f"{base_url}/wp-json/wc/store/v1/products?search={quote_plus(q)}&per_page=25"
@@ -1184,10 +1302,15 @@ async def scrape_woocommerce_vendor(
                         raw_price = prices.get("price", "0")
                         minor_unit = prices.get("currency_minor_unit", 2)
                         q_items.append({
-                            "product_name": title, "specification": extract_specs_from_title(title, short_desc),
-                            "brand_name": detect_brand(title), "vendor_name": vendor, "sku_name": item.get("sku") or "N/A",
-                            "rate": float(raw_price) / (10 ** minor_unit) if raw_price else 0.0, "in_stock": True,
-                            "link": permalink, "relevance": score
+                            "product_name": title,
+                            "specification": extract_specs_from_title(title, short_desc),
+                            "brand_name": detect_brand(title),
+                            "vendor_name": vendor,
+                            "sku_name": item.get("sku") or "N/A",
+                            "rate": float(raw_price) / (10 ** minor_unit) if raw_price else 0.0,
+                            "in_stock": True,
+                            "link": permalink,
+                            "relevance": score
                         })
         except Exception:
             pass
@@ -1198,7 +1321,6 @@ async def scrape_woocommerce_vendor(
         if isinstance(b, list):
             found_items.extend(b)
 
-    # Fallbacks: DOM & Web Search indexing
     if len(found_items) < 2:
         for q in queries[:2]:
             search_url = f"{base_url}/?s={quote_plus(q)}&post_type=product"
@@ -1209,7 +1331,14 @@ async def scrape_woocommerce_vendor(
             except Exception:
                 pass
 
-    if (intent.get("is_ai_expanded") or intent.get("is_extremely_general") or len(found_items) < 3) and vendor in VENDOR_DOMAINS:
+    if len(found_items) < 2:
+        for q in queries[:2]:
+            search_url = f"{base_url}/?s={quote_plus(q)}&post_type=product"
+            md_text = await fetch_via_jina(session, jina_sem, search_url)
+            if md_text:
+                found_items.extend(parse_markdown_listing(md_text, vendor, base_url, intent))
+
+    if (intent.get("is_ai_expanded") or len(found_items) < 3) and vendor in VENDOR_DOMAINS:
         found_items.extend(await fetch_multi_engine_web_index(
             session, search_sem, jina_sem, vendor, VENDOR_DOMAINS[vendor], base_url, intent
         ))
@@ -1242,9 +1371,15 @@ async def scrape_shopify_vendor(
                         continue
                     sku = p.get("variants", [{}])[0].get("sku") if p.get("variants") else "N/A"
                     q_items.append({
-                        "product_name": title, "specification": extract_specs_from_title(title, body_text),
-                        "brand_name": detect_brand(title, p.get("vendor", "")), "vendor_name": vendor, "sku_name": sku if sku else "N/A",
-                        "rate": float(p.get("price", 0)), "in_stock": True, "link": prod_url, "relevance": score
+                        "product_name": title,
+                        "specification": extract_specs_from_title(title, body_text),
+                        "brand_name": detect_brand(title, p.get("vendor", "")),
+                        "vendor_name": vendor,
+                        "sku_name": sku if sku else "N/A",
+                        "rate": float(p.get("price", 0)),
+                        "in_stock": True,
+                        "link": prod_url,
+                        "relevance": score
                     })
         except Exception:
             pass
@@ -1255,7 +1390,7 @@ async def scrape_shopify_vendor(
         if isinstance(b, list):
             found_items.extend(b)
 
-    if (intent.get("is_ai_expanded") or intent.get("is_extremely_general") or len(found_items) < 3) and vendor in VENDOR_DOMAINS:
+    if (intent.get("is_ai_expanded") or len(found_items) < 3) and vendor in VENDOR_DOMAINS:
         found_items.extend(await fetch_multi_engine_web_index(
             session, search_sem, jina_sem, vendor, VENDOR_DOMAINS[vendor], base_url, intent
         ))
@@ -1285,7 +1420,7 @@ async def scrape_custom_or_notion_vendor(
             if md_text:
                 found_items.extend(parse_markdown_listing(md_text, vendor, base_domain_url, intent))
 
-    if (intent.get("is_ai_expanded") or intent.get("is_extremely_general") or len(found_items) < 2) and vendor in VENDOR_DOMAINS:
+    if (intent.get("is_ai_expanded") or len(found_items) < 2) and vendor in VENDOR_DOMAINS:
         found_items.extend(await fetch_multi_engine_web_index(
             session, search_sem, jina_sem, vendor, VENDOR_DOMAINS[vendor], base_domain_url, intent
         ))
@@ -1322,13 +1457,14 @@ async def run_all_scrapers(intent: dict, selected_vendors: list[str]) -> list[di
     by_link = {}
     for item in all_items:
         clean_link = item["link"].split("?")[0].rstrip("/").lower()
-        if clean_link not in by_link:
-            by_link[clean_link] = item
+        key = clean_link if clean_link != DANNY_NOTION_URL.lower() else f"danny_{item['product_name'].lower()}"
+        if key not in by_link:
+            by_link[key] = item
         else:
-            if by_link[clean_link]["rate"] == 0 and item["rate"] > 0:
-                by_link[clean_link] = item
-            elif by_link[clean_link]["sku_name"] == "N/A" and item["sku_name"] != "N/A":
-                by_link[clean_link]["sku_name"] = item["sku_name"]
+            if by_link[key]["rate"] == 0 and item["rate"] > 0:
+                by_link[key] = item
+            elif by_link[key]["sku_name"] == "N/A" and item["sku_name"] != "N/A":
+                by_link[key]["sku_name"] = item["sku_name"]
 
     return list(by_link.values())
 
@@ -1411,6 +1547,8 @@ if "search_results" not in st.session_state:
     st.session_state.search_results = []
 if "last_intent" not in st.session_state:
     st.session_state.last_intent = None
+if "active_query" not in st.session_state:
+    st.session_state.active_query = ""
 
 # ----------------- SIDEBAR SETTINGS -----------------
 with st.sidebar:
@@ -1426,39 +1564,29 @@ with st.sidebar:
 
 # ----------------- CRASH-PROOF BRAND LOGO & HEADER -----------------
 def load_valid_logo():
-    """Safely opens local logo file with PIL so corrupted files never crash Streamlit."""
     for filename in ["image_5.png", "logo.png", "logo.jpg", "logo.jpeg", "logo.webp"]:
         if os.path.exists(filename) and os.path.getsize(filename) > 100:
             try:
                 img = Image.open(filename)
-                img.verify()  # Verify it is not corrupted
-                return Image.open(filename)  # Re-open after verify() for rendering
+                img.verify()
+                return Image.open(filename)
             except Exception:
                 continue
     return None
 
-# Built-in SVG fallback matching the Infosky / The Drone Builder cyan & orange circuit emblem
 FALLBACK_LOGO_SVG = """
 <div style="display:flex; align-items:center; justify-content:center; padding: 6px 0;">
-    <svg viewBox="0 0 260 190" width="100%" style="max-width:210px; height:auto;" xmlns="http://www.w3.org/2000/svg">
-        <!-- Outer Cyan & Orange Circuit Rings -->
+    <svg viewBox="0 0 260 190" width="100%" style="max-width:190px; height:auto;" xmlns="http://www.w3.org/2000/svg">
         <circle cx="130" cy="95" r="78" fill="none" stroke="#00B4D8" stroke-width="4" stroke-dasharray="180 40 90 30"/>
         <circle cx="130" cy="95" r="68" fill="none" stroke="#F77F00" stroke-width="3.5" stroke-dasharray="120 50 140 40"/>
-        <!-- Orbital Swooshes -->
         <ellipse cx="130" cy="95" rx="92" ry="34" fill="none" stroke="#00B4D8" stroke-width="3.5" transform="rotate(-35 130 95)"/>
         <ellipse cx="130" cy="95" rx="92" ry="34" fill="none" stroke="#F77F00" stroke-width="3" transform="rotate(35 130 95)"/>
-        <!-- Circuit Nodes -->
         <circle cx="192" cy="40" r="6" fill="#00B4D8"/>
         <circle cx="68" cy="150" r="6" fill="#F77F00"/>
-        <circle cx="130" cy="17" r="5" fill="#F77F00"/>
-        <circle cx="130" cy="173" r="5" fill="#00B4D8"/>
-        <!-- Split Cyan/Orange Gear Ring -->
         <path d="M 130 37 A 58 58 0 0 0 130 153 Z" fill="none" stroke="#00B4D8" stroke-width="10" stroke-dasharray="14 8"/>
         <path d="M 130 37 A 58 58 0 0 1 130 153 Z" fill="none" stroke="#F77F00" stroke-width="10" stroke-dasharray="14 8"/>
-        <!-- Central Quadcopter Frame -->
         <path d="M 102 67 L 158 123 M 158 67 L 102 123" stroke="#00B4D8" stroke-width="9" stroke-linecap="round"/>
         <circle cx="130" cy="95" r="14" fill="#FFFFFF" stroke="#F77F00" stroke-width="5"/>
-        <!-- 4 Rotors -->
         <circle cx="100" cy="65" r="16" fill="#FFFFFF" stroke="#F77F00" stroke-width="4.5"/>
         <circle cx="160" cy="65" r="16" fill="#FFFFFF" stroke="#F77F00" stroke-width="4.5"/>
         <circle cx="100" cy="125" r="16" fill="#FFFFFF" stroke="#F77F00" stroke-width="4.5"/>
@@ -1496,65 +1624,72 @@ with title_col:
 search_col, btn_col = st.columns([5, 1.2])
 with search_col:
     query_input = st.text_input(
-        "Search drone component (broad requirement or spec model)",
-        placeholder="Try '5 inch FPV motors', 'SpeedyBee F405 V4 Stack' or simply 'brushless motor'...",
+        "Search drone component",
+        value=st.session_state.active_query,
+        placeholder="Try '3115 900kv motor', '5 inch FPV motors', '2.5 inch frame', or 'brushless motor'...",
         label_visibility="collapsed"
     )
 with btn_col:
     run_search = st.button("🔍 Search Vendors", type="primary", use_container_width=True)
 
-# Process visual intent first (Pre-Screening Broad Triage Cases)
-pre_screen_intent = None
-if query_input.strip() and not run_search:
-    pre_screen_intent = understand_user_query(query_input.strip(), api_key)
+# Pre-screen for general triage queries
+pre_screen_intent = understand_user_query(query_input.strip(), api_key) if query_input.strip() else None
 
-# ----------------- DYNAMIC TRIAGE BOARD FOR EXTREMELY GENERAL SEARCHES -----------------
 if pre_screen_intent and pre_screen_intent.get("is_extremely_general"):
     triage = pre_screen_intent["triage_info"]
     st.markdown(f"""
     <div class="triage-card">
-        <div class="triage-title">🎯 Triage Assistant: Specify Your Drone Application Class</div>
-        <p>{triage['message']}</p>
+        <div class="triage-title">🎯 Technical Triage Assistant: Select Your Drone Class</div>
+        <p style="margin:0;">{triage['message']}</p>
     </div>
     """, unsafe_allow_html=True)
 
-    # Let users instantly Drill-down into precise technical ranges with a single click
     triage_cols = st.columns(3)
     idx = 0
     for label, payload in triage["categories"].items():
         with triage_cols[idx % 3]:
-            # Simple click cards that directly inject into inputs & rerun
             if st.button(f"🎯 {label}\n({payload['subtext']})", use_container_width=True, key=f"triage_btn_{idx}"):
-                query_input = payload["search"]
-                run_search = True
+                st.session_state.active_query = payload["search"]
+                intent_info = understand_user_query(payload["search"], api_key)
+                st.session_state.last_intent = intent_info
+                st.session_state.search_results = asyncio.run(run_all_scrapers(intent_info, selected_vendors))
                 st.rerun()
         idx += 1
 
-# Execute search
+# Execute search when button clicked
 if run_search:
     if not query_input.strip():
         st.warning("Please enter a component or drone requirement.")
+    elif pre_screen_intent and pre_screen_intent.get("is_extremely_general"):
+        st.info("Please select one of the specific drone classes above so the agent only searches compatible specifications.")
     else:
-        with st.spinner(f"Classifying '{query_input.strip()}' parameters & initiating deep search across {len(selected_vendors)} vendor database indexes..."):
+        st.session_state.active_query = query_input.strip()
+        with st.spinner(f"Verifying technical specs for '{query_input.strip()}' across {len(selected_vendors)} vendor databases..."):
             intent_info = understand_user_query(query_input.strip(), api_key)
             matched_items = asyncio.run(run_all_scrapers(intent_info, selected_vendors))
             st.session_state.last_intent = intent_info
             st.session_state.search_results = matched_items
 
-# Display Advisor translation
-if st.session_state.last_intent:
+# Display Advisor translation & Spec Locks
+if st.session_state.last_intent and not st.session_state.last_intent.get("is_extremely_general"):
     intent = st.session_state.last_intent
-    if not intent.get("is_extremely_general"):
-        queries_badges = "".join([f'<span class="ai-badge">🔎 {q}</span>' for q in intent["search_queries"]])
-        st.markdown(f"""
-        <div class="ai-advisor-card">
-            <div>🤖 <b>AI Technical Matcher:</b> {intent['ai_explanation']}</div>
-            <div style="margin-top:6px; color:#475569;">
-                <b>Identified Group:</b> <span class="ai-badge">{intent['category']}</span>
-                <b>Parallel Scrapes Dispatched:</b> {queries_badges}
-            </div>
+    queries_badges = "".join([f'<span class="ai-badge">🔎 {q}</span>' for q in intent["search_queries"]])
+    locks_html = ""
+    if intent.get("locked_stators"):
+        locks_html += f'<span class="lock-badge">🔒 Stator Lock: {", ".join(intent["locked_stators"])}</span>'
+    if intent.get("locked_kvs"):
+        locks_html += f'<span class="lock-badge">🔒 KV Lock: {", ".join([k + "KV" for k in intent["locked_kvs"]])}</span>'
+
+    st.markdown(f"""
+    <div class="ai-advisor-card">
+        <div>🤖 <b>AI Technical Matcher:</b> {intent['ai_explanation']}</div>
+        <div style="margin-top:6px; color:#475569;">
+            <b>Identified Group:</b> <span class="ai-badge">{intent['category']}</span>
+            {locks_html}
+            <b>Parallel Scrapes Dispatched:</b> {queries_badges}
         </div>
-        """, unsafe_allow_html=True)
+    </div>
+    """, unsafe_allow_html=True)
 
 # ----------------- SEARCH RESULTS & ADD TO BOQ -----------------
 results = st.session_state.search_results
@@ -1585,7 +1720,7 @@ if results:
 
         st.markdown('<div class="section-card">', unsafe_allow_html=True)
         st.markdown('<div class="section-title">1. Product Search Findings (Low to High Rate Index)</div>', unsafe_allow_html=True)
-        st.markdown('<div class="section-note">Check the box for compatible parts, customize categorized tier labels below, and press <b>Add to BOQ</b>.</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-note">Check the box for compatible parts, customize categorized tier labels below, and press <b>Add Selected Item(s) to BOQ</b>.</div>', unsafe_allow_html=True)
 
         st.markdown(f"""
         <div class="summary-strip">
@@ -1627,21 +1762,25 @@ if results:
                     added = 0
                     for _, row in selected_rows.iterrows():
                         st.session_state.boq_cart.append({
-                            "Category": custom_cat.strip() or default_cat, "Item Name": row["Product Name"],
-                            "Rate": float(row["Rate (₹)"]), "Vendor": row["Vendor Name"], "SKU": row["SKU Name"], "Link": row["Link"],
+                            "Category": custom_cat.strip() or default_cat,
+                            "Item Name": row["Product Name"],
+                            "Rate": float(row["Rate (₹)"]),
+                            "Vendor": row["Vendor Name"],
+                            "SKU": row["SKU Name"],
+                            "Link": row["Link"],
                         })
                         added += 1
-                    st.success(f"Ported {added} specs to BOQ summary card below. Continue query build tier.")
+                    st.success(f"Added {added} item(s) to BOQ summary card below.")
                     st.rerun()
 
         st.markdown('</div>', unsafe_allow_html=True)
-elif st.session_state.last_intent is not None:
-    st.info("No exact in-stock component results match this query criteria. Refine specs or choose triage classes.")
+elif st.session_state.last_intent is not None and not st.session_state.last_intent.get("is_extremely_general"):
+    st.info("No exact in-stock component results match this locked specification across the selected stores.")
 
-# ----------------- BILL OF QUANTITIES (BOQ) Summary Card -----------------
+# ----------------- BILL OF QUANTITIES (BOQ) SUMMARY CARD -----------------
 st.markdown('<div class="section-card">', unsafe_allow_html=True)
-st.markdown('<div class="section-title">2. Build Bill of Quantities (BOQ) summary Card</div>', unsafe_allow_html=True)
-st.markdown('<div class="section-note">Add multi-tier specs across all sub-queries here. Edit pricing & tags on check, delete unneeded entries, and output results.</div>', unsafe_allow_html=True)
+st.markdown('<div class="section-title">2. Build Bill of Quantities (BOQ) Summary Card</div>', unsafe_allow_html=True)
+st.markdown('<div class="section-note">Add multi-tier specs across all sub-queries here. Edit pricing & tags inline, remove unneeded entries, and export to Excel (.xlsx).</div>', unsafe_allow_html=True)
 
 if st.session_state.boq_cart:
     boq_df = pd.DataFrame(st.session_state.boq_cart)
@@ -1652,7 +1791,7 @@ if st.session_state.boq_cart:
 
     st.markdown(f"""
     <div class="summary-strip">
-        <div class="summary-pill">Total Bill items: <b>{len(boq_df)}</b></div>
+        <div class="summary-pill">Total Bill Items: <b>{len(boq_df)}</b></div>
         <div class="summary-pill">Integrated Vendors: <b>{boq_df['Vendor'].nunique()}</b></div>
         <div class="summary-pill">Projected Build Cost: <b>₹{total_cost:,.2f}</b></div>
     </div>
@@ -1668,12 +1807,11 @@ if st.session_state.boq_cart:
             "Vendor": st.column_config.TextColumn("Vendor", width="small", disabled=True),
             "SKU": st.column_config.TextColumn("SKU Reference", width="small", disabled=True),
             "Link": st.column_config.LinkColumn("View ↗", display_text="Source URL ↗", disabled=True),
-            "Remove": st.column_config.CheckboxColumn("Remove", help="Omit this specifications line", default=False, width="small"),
+            "Remove": st.column_config.CheckboxColumn("Remove", help="Omit this specification line", default=False, width="small"),
         },
         use_container_width=True, hide_index=True, key="boq_table_editor"
     )
 
-    # Sync interactive updates back to State variables
     for idx in range(len(st.session_state.boq_cart)):
         st.session_state.boq_cart[idx]["Category"] = edited_boq.loc[idx, "Category"]
         st.session_state.boq_cart[idx]["Item Name"] = edited_boq.loc[idx, "Item Name"]
@@ -1689,15 +1827,15 @@ if st.session_state.boq_cart:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary", use_container_width=True
         )
     with b_col2:
-        if st.button("🗑️ Remove checked specifications", type="secondary", use_container_width=True):
+        if st.button("🗑️ Remove Checked Specifications", type="secondary", use_container_width=True):
             keep_indices = edited_boq[edited_boq["Remove"] == False].index.tolist()
             st.session_state.boq_cart = [st.session_state.boq_cart[i] for i in keep_indices]
             st.rerun()
     with b_col3:
-        if st.button("🧹 Clear Entire BOQ summary data", type="secondary", use_container_width=True):
+        if st.button("🧹 Clear Entire BOQ Summary Data", type="secondary", use_container_width=True):
             st.session_state.boq_cart = []
             st.rerun()
 else:
-    st.info("No items added yet. Simply look up motors, frames or hardware specs, tick checkboxes, and configure categorization tags to construct a complete part-build profile.")
+    st.info("No items added yet. Search for motors, frames, or hardware specs above, tick checkboxes, and click 'Add Selected Item(s) to BOQ'.")
 
 st.markdown('</div>', unsafe_allow_html=True)
