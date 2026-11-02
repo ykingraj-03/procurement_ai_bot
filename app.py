@@ -10,6 +10,7 @@ import httpx
 from bs4 import BeautifulSoup
 import pandas as pd
 import streamlit as st
+from PIL import Image
 
 try:
     from google import genai
@@ -1423,20 +1424,71 @@ with st.sidebar:
     selected_vendors = st.multiselect("Stores to search", options=all_vendor_names, default=all_vendor_names)
     hide_zero_price = st.checkbox("Hide items without prices", value=False)
 
-# ----------------- EMBED BRAND LOGO & AP-TITLES -----------------
-# Dynamically display brand logo directly above the interactive app frame
-logo_col, title_col = st.columns([1.2, 4.2])
+# ----------------- CRASH-PROOF BRAND LOGO & HEADER -----------------
+def load_valid_logo():
+    """Safely opens local logo file with PIL so corrupted files never crash Streamlit."""
+    for filename in ["image_5.png", "logo.png", "logo.jpg", "logo.jpeg", "logo.webp"]:
+        if os.path.exists(filename) and os.path.getsize(filename) > 100:
+            try:
+                img = Image.open(filename)
+                img.verify()  # Verify it is not corrupted
+                return Image.open(filename)  # Re-open after verify() for rendering
+            except Exception:
+                continue
+    return None
+
+# Built-in SVG fallback matching the Infosky / The Drone Builder cyan & orange circuit emblem
+FALLBACK_LOGO_SVG = """
+<div style="display:flex; align-items:center; justify-content:center; padding: 6px 0;">
+    <svg viewBox="0 0 260 190" width="100%" style="max-width:210px; height:auto;" xmlns="http://www.w3.org/2000/svg">
+        <!-- Outer Cyan & Orange Circuit Rings -->
+        <circle cx="130" cy="95" r="78" fill="none" stroke="#00B4D8" stroke-width="4" stroke-dasharray="180 40 90 30"/>
+        <circle cx="130" cy="95" r="68" fill="none" stroke="#F77F00" stroke-width="3.5" stroke-dasharray="120 50 140 40"/>
+        <!-- Orbital Swooshes -->
+        <ellipse cx="130" cy="95" rx="92" ry="34" fill="none" stroke="#00B4D8" stroke-width="3.5" transform="rotate(-35 130 95)"/>
+        <ellipse cx="130" cy="95" rx="92" ry="34" fill="none" stroke="#F77F00" stroke-width="3" transform="rotate(35 130 95)"/>
+        <!-- Circuit Nodes -->
+        <circle cx="192" cy="40" r="6" fill="#00B4D8"/>
+        <circle cx="68" cy="150" r="6" fill="#F77F00"/>
+        <circle cx="130" cy="17" r="5" fill="#F77F00"/>
+        <circle cx="130" cy="173" r="5" fill="#00B4D8"/>
+        <!-- Split Cyan/Orange Gear Ring -->
+        <path d="M 130 37 A 58 58 0 0 0 130 153 Z" fill="none" stroke="#00B4D8" stroke-width="10" stroke-dasharray="14 8"/>
+        <path d="M 130 37 A 58 58 0 0 1 130 153 Z" fill="none" stroke="#F77F00" stroke-width="10" stroke-dasharray="14 8"/>
+        <!-- Central Quadcopter Frame -->
+        <path d="M 102 67 L 158 123 M 158 67 L 102 123" stroke="#00B4D8" stroke-width="9" stroke-linecap="round"/>
+        <circle cx="130" cy="95" r="14" fill="#FFFFFF" stroke="#F77F00" stroke-width="5"/>
+        <!-- 4 Rotors -->
+        <circle cx="100" cy="65" r="16" fill="#FFFFFF" stroke="#F77F00" stroke-width="4.5"/>
+        <circle cx="160" cy="65" r="16" fill="#FFFFFF" stroke="#F77F00" stroke-width="4.5"/>
+        <circle cx="100" cy="125" r="16" fill="#FFFFFF" stroke="#F77F00" stroke-width="4.5"/>
+        <circle cx="160" cy="125" r="16" fill="#FFFFFF" stroke="#F77F00" stroke-width="4.5"/>
+        <circle cx="100" cy="65" r="5" fill="#00B4D8"/>
+        <circle cx="160" cy="65" r="5" fill="#00B4D8"/>
+        <circle cx="100" cy="125" r="5" fill="#00B4D8"/>
+        <circle cx="160" cy="125" r="5" fill="#00B4D8"/>
+    </svg>
+</div>
+"""
+
+logo_col, title_col = st.columns([1.1, 4.3])
 with logo_col:
-    if os.path.exists("image_5.png"):
-        st.image("image_5.png", use_container_width=True)
+    valid_logo = load_valid_logo()
+    if valid_logo is not None:
+        st.image(valid_logo, use_container_width=True)
     else:
-        st.write("🛠️ Logo Area")
+        st.markdown(FALLBACK_LOGO_SVG, unsafe_allow_html=True)
+
 with title_col:
     st.markdown("""
-    <div style="padding-top: 15px;">
-        <div class="app-title">The Drone Builder</div>
-        <p style="font-size:1.12rem; font-weight:600; color:#1E3A8A; margin: 0 0 4px 0;">AI-Assisted Vendor Search & BOQ Builder</p>
-        <p class="app-subtitle">Innovating the part selection process across 13 Indian drone stores</p>
+    <div style="padding-top: 12px;">
+        <div class="app-title">
+            <span style="color:#00A8E8;">The Drone</span> <span style="color:#F77F00;">Builder</span>
+            <span style="color:#0F172A; font-weight:600; font-size:1.25rem;"> — AI-Assisted Vendor Search & BOQ Builder</span>
+        </div>
+        <p class="app-subtitle" style="color:#D97706; font-weight:600; letter-spacing:0.08em; text-transform:uppercase; font-size:0.82rem; margin-top:4px;">
+            INNOVATING THE PART SELECTION PROCESS
+        </p>
     </div>
     """, unsafe_allow_html=True)
 
